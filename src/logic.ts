@@ -1,0 +1,279 @@
+import type { CleanViewChecklist, CleanViewTask, TodoItem } from "./types.ts";
+
+export const MAX_NAME = 40;
+export const METER_CELLS = 10;
+export const FALLBACK_NAME = "Working on it";
+export const PLACEHOLDER_TITLE = "Your request";
+export const PLACEHOLDER_PREFIX = "placeholder-";
+
+const CODE_FILE =
+  /\.(tsx?|jsx?|mjs|cjs|mts|cts|py|go|rs|rb|java|kt|swift|c|cc|cpp|h|hpp|cs|php|sh|bash|zsh|json|ya?ml|toml|md|html?|css|scss|sql|lock|xml|ini|env|vue|svelte)[)\].,:;!?'"]*$/i;
+
+function cleanWords(raw: string): string[] {
+  return raw
+    .replace(/`[^`]*`/g, " ")
+    .replace(/`/g, " ")
+    .split(/\s+/)
+    .filter((word) => word !== "" && !/[/\\]/.test(word) && !CODE_FILE.test(word));
+}
+
+/** One plain name: no code, no paths, no file names, at most 40 characters. */
+export function cleanName(raw: string): string {
+  const words = cleanWords(raw);
+  let name = words.join(" ").trim();
+  if (name === "") return FALLBACK_NAME;
+  name = name[0]!.toUpperCase() + name.slice(1);
+  if (name.length <= MAX_NAME) return name;
+  const cut = name.slice(0, MAX_NAME - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 0 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/** Short 2–6 word job title derived from a prompt or explicit title. */
+export function fallbackTitle(raw: string): string {
+  const words = cleanWords(raw.replace(/["'.*?!:;()\[\]]/g, " ")).slice(0, 6);
+  const joined = words.join(" ").trim();
+  if (joined === "") return PLACEHOLDER_TITLE;
+  const titled = joined[0]!.toUpperCase() + joined.slice(1);
+  return titled.length <= MAX_NAME ? titled : cleanName(titled);
+}
+
+export function clampPercent(percent: number): number {
+  if (!Number.isFinite(percent)) return 0;
+  return Math.round(Math.min(100, Math.max(0, percent)));
+}
+
+export const EMPTY: CleanViewChecklist = {
+  title: "",
+  phase: "idle",
+  tasks: [],
+  needsYouReason: null,
+  stuckReason: null,
+  activityHint: null,
+  startedAt: 0,
+  finishedAt: null,
+  isCollapsed: false,
+};
+
+export function isRunning(list: CleanViewChecklist): boolean {
+  return (
+    list.phase === "working" ||
+    list.phase === "needsYou" ||
+    (list.phase === "stuck" && list.finishedAt === null)
+  );
+}
+
+export function hasPlan(list: CleanViewChecklist): boolean {
+  return list.tasks.length > 0 && list.tasks.every((task) => !task.id.startsWith(PLACEHOLDER_PREFIX));
+}
+
+function makeTask(id: string, name: string, status: CleanViewTask["status"]): CleanViewTask {
+  return { id, name, status, percent: status === "done" ? 100 : 0, hasReported: false };
+}
+
+export function newJob(startedAt: number, title: string): CleanViewChecklist {
+  return {
+    ...EMPTY,
+    title: title.trim() !== "" ? fallbackTitle(title) : PLACEHOLDER_TITLE,
+    phase: "working",
+    startedAt,
+    tasks: [
+      makeTask(`${PLACEHOLDER_PREFIX}understand`, "Understand your request", "active"),
+      makeTask(`${PLACEHOLDER_PREFIX}plan`, "Plan the steps", "upcoming"),
+    ],
+  };
+}
+
+/** Lays out the plan: every step upcoming except the first, which starts now. */
+export function planSteps(
+  list: CleanViewChecklist,
+  steps: readonly string[],
+  title?: string,
+): CleanViewChecklist {
+  const names = steps.map(cleanName).slice(0, 8);
+  const tasks = (names.length > 0 ? names : [FALLBACK_NAME]).map((name, i) =>
+    makeTask(`step-${i}-${name}`, name, i === 0 ? "active" : "upcoming"),
+  );
+  const nextTitle = title !== undefined && title.trim() !== "" ? fallbackTitle(title) : list.title;
+  return { ...list, title: nextTitle, tasks };
+}
+
+function same(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/** Every step from `index` on: the one at `index` active, the rest upcoming unless done. */
+function activate(
+  tasks: CleanViewTask[],
+  index: number,
+  percent: number,
+  hasReported: boolean,
+): CleanViewTask[] {
+  return tasks.map((one, i) => {
+    if (i < index) return { ...one, status: "done", percent: 100 };
+    if (i === index) return { ...one, status: "active", percent, hasReported };
+    return one.status === "active" ? { ...one, status: "upcoming" } : one;
+  });
+}
+
+/** Moves the plan forward for a report on `name`: earlier steps check off, 100 starts the next. */
+export function reportProgress(
+  list: CleanViewChecklist,
+  name: string,
+  percent: number,
+): CleanViewChecklist {
+  const clean = cleanName(name);
+  const p = clampPercent(percent);
+  let tasks = list.tasks.filter((one) => !one.id.startsWith(PLACEHOLDER_PREFIX));
+  let index = tasks.findIndex((one) => same(one.name, clean));
+  if (index === -1) {
+    const active = tasks.findIndex((one) => one.status === "active");
+    index = active === -1 ? tasks.length : active;
+    tasks = [
+      ...tasks.slice(0, index),
+      makeTask(`step-x${tasks.length}-${clean}`, clean, "upcoming"),
+      ...tasks.slice(index),
+    ];
+  }
+  tasks = activate(tasks, index, p, true);
+  if (p >= 100) {
+    tasks = tasks.map((one, i) => (i === index ? { ...one, status: "done", percent: 100 } : one));
+    const next = tasks.findIndex((one, i) => i > index && one.status !== "done");
+    if (next !== -1) tasks = activate(tasks, next, 0, false);
+  }
+  return { ...list, tasks };
+}
+
+/** A to-do list as the plan: completed rows done, the in-progress one active. */
+export function fromTodos(list: CleanViewChecklist, todos: readonly TodoItem[]): CleanViewChecklist {
+  const kept = new Map(list.tasks.map((one) => [one.name.toLowerCase(), one]));
+  let tasks = todos.map((todo, i): CleanViewTask => {
+    const name = cleanName(todo.content);
+    const before = kept.get(name.toLowerCase());
+    if (todo.status === "completed") return { ...makeTask(`todo-${i}-${name}`, name, "done") };
+    if (todo.status === "in_progress") {
+      return {
+        id: `todo-${i}-${name}`,
+        name,
+        status: "active",
+        percent: before?.percent ?? 0,
+        hasReported: before?.hasReported ?? false,
+      };
+    }
+    return makeTask(`todo-${i}-${name}`, name, "upcoming");
+  });
+  if (!tasks.some((one) => one.status === "active")) {
+    const first = tasks.findIndex((one) => one.status === "upcoming");
+    if (first !== -1) {
+      tasks = tasks.map((one, i) => (i === first ? { ...one, status: "active" } : one));
+    }
+  }
+  return { ...list, tasks };
+}
+
+/** A task added as an upcoming row (or the active one if none is). */
+export function addTask(list: CleanViewChecklist, id: string, subject: string): CleanViewChecklist {
+  const tasks = list.tasks.filter((one) => !one.id.startsWith(PLACEHOLDER_PREFIX));
+  const status = tasks.some((one) => one.status === "active") ? "upcoming" : "active";
+  return { ...list, tasks: [...tasks, makeTask(`task-${id}`, cleanName(subject), status)] };
+}
+
+/** Updates status and subject on the matching row. */
+export function updateTask(
+  list: CleanViewChecklist,
+  id: string,
+  status: "pending" | "in_progress" | "completed" | "deleted" | undefined,
+  subject: string | undefined,
+): CleanViewChecklist {
+  const key = `task-${id}`;
+  const index = list.tasks.findIndex((one) => one.id === key);
+  if (index === -1) return list;
+  if (status === "deleted") return { ...list, tasks: list.tasks.filter((one) => one.id !== key) };
+  let tasks = list.tasks.map((one) =>
+    one.id === key && subject !== undefined ? { ...one, name: cleanName(subject) } : one,
+  );
+  if (status === "in_progress") {
+    tasks = tasks.map((one, i) =>
+      i === index ? { ...one, status: "active" } : one.status === "active" ? { ...one, status: "upcoming" } : one,
+    );
+  } else if (status === "completed") {
+    tasks = tasks.map((one, i) => (i === index ? { ...one, status: "done", percent: 100 } : one));
+    if (!tasks.some((one) => one.status === "active")) {
+      const next = tasks.findIndex((one) => one.status === "upcoming");
+      if (next !== -1) tasks = tasks.map((one, i) => (i === next ? { ...one, status: "active" } : one));
+    }
+  } else if (status === "pending") {
+    tasks = tasks.map((one, i) => (i === index ? { ...one, status: "upcoming", percent: 0 } : one));
+  }
+  return { ...list, tasks };
+}
+
+/** Calm sentence for a turn ended by an API error. */
+export function errorSentence(answer: string): string {
+  if (/rate.?limit|usage limit|\b429\b|quota/i.test(answer)) {
+    return "you hit your usage limit, try again a little later";
+  }
+  if (/overload|\b529\b|capacity/i.test(answer)) {
+    return "the model servers are busy, try again in a minute";
+  }
+  if (/too long|context (window|length|limit)|maximum context/i.test(answer)) {
+    return "type /compact and try again";
+  }
+  if (/network|connection|econn|fetch failed|socket|offline|timed? ?out|dns/i.test(answer)) {
+    return "the internet connection dropped";
+  }
+  if (/auth|\b401\b|\b403\b|log ?in|api key|oauth|credential/i.test(answer)) {
+    return "type /login";
+  }
+  return "something went wrong talking to the model, try again";
+}
+
+export function pausedNeedsYouReason(list: CleanViewChecklist, lastAssistantText: string): string {
+  if (lastAssistantText.trim().endsWith("?")) {
+    return "Pi asked a question above — reply to continue";
+  }
+  const current = list.tasks.find((t) => t.status === "active") ?? list.tasks.find((t) => t.status !== "done");
+  return current
+    ? `Paused on "${current.name}" — type "continue" to resume`
+    : 'Paused — type "continue" to resume';
+}
+
+export function isUserRejection(text: string | undefined): boolean {
+  return (
+    text !== undefined &&
+    /doesn.t want to proceed|was rejected|not approved|user (denied|rejected|declined)/i.test(text)
+  );
+}
+
+export function duration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+/** Ten cells: full, filled to the percent, a moving sweep, or empty. */
+export function meter(one: CleanViewTask, frame: number): string {
+  if (one.status === "done") return "█".repeat(METER_CELLS);
+  if (one.status === "upcoming") return "░".repeat(METER_CELLS);
+  if (!one.hasReported) {
+    const at = ((frame % METER_CELLS) + METER_CELLS) % METER_CELLS;
+    return Array.from({ length: METER_CELLS }, (_, i) =>
+      (i - at + METER_CELLS) % METER_CELLS < 3 ? "█" : "░",
+    ).join("");
+  }
+  const filled = Math.round(one.percent / 10);
+  return "█".repeat(filled) + "░".repeat(METER_CELLS - filled);
+}
+
+export function label(one: CleanViewTask, isFirstUpcoming: boolean): string {
+  if (one.status === "done") return "Done";
+  if (one.status === "active") return one.hasReported ? `${one.percent}%` : "Working";
+  return isFirstUpcoming ? "Next" : "Up next";
+}
+
+/** A name sized to the column: cut with "…" when it would wrap, padded otherwise. */
+export function fit(name: string, width: number): string {
+  if (name.length <= width) return name.padEnd(width);
+  return `${name.slice(0, Math.max(0, width - 1))}…`;
+}

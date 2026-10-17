@@ -1,0 +1,52 @@
+{
+  "name": "pi-clean-view",
+  "version": "0.1.0",
+  "description": "Pi extension: hide tool calls and show a clean progress checklist above the prompt",
+  "license": "MIT",
+  "author": "Integralist",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Integralist/pi-clean-view.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24.6.0 <25"
+  },
+  "files": [
+    "extensions/",
+    "src/",
+    "README.md"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "clean-view",
+    "progress",
+    "tui"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/clean-view.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@earendil-works/pi-tui": "1.2.0",
+    "@types/node": "24.19.2",
+    "tsx": "4.23.15",
+    "typebox": "1.1.9",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}
