@@ -256,6 +256,20 @@ describe("logic", () => {
     expect(meter(list.tasks[1]!, 0)).toBe("███░░░░░░░");
   });
 
+  test("planSteps called again keeps finished steps done and starts the first unfinished one", () => {
+    let list = planSteps(newJob(1000, "Ship it"), ["Read notes", "Build page", "Check page"]);
+    list = reportProgress(list, "Read notes", 100);
+
+    list = planSteps(list, ["Read notes", "Build page", "Clean up formatting", "Check page"]);
+
+    expect(list.tasks.map((t) => [t.name, t.status])).toEqual([
+      ["Read notes", "done"],
+      ["Build page", "active"],
+      ["Clean up formatting", "upcoming"],
+      ["Check page", "upcoming"],
+    ]);
+  });
+
   test("fromTodos, addTask, and updateTask synchronize external task tools", () => {
     let list = newJob(1000, "Build page");
     list = fromTodos(list, [
@@ -436,6 +450,76 @@ describe("extension integration", () => {
     const rendered = h.renderWidget(80).join("\n");
     expect(rendered).toMatch(/✓ Read brand notes\s+█{10}\s+Done/);
     expect(rendered).toMatch(/▶ Build pricing section\s+[█░]{10}\s+Working/);
+  });
+
+  test("tells the model it may replan when the job grows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    const systemPromptOptions = { sections: {} as Record<string, string> };
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Build my landing page",
+      systemPrompt: "",
+      systemPromptOptions,
+    });
+
+    expect(systemPromptOptions.sections.clean_view).toContain("call `plan_steps` again");
+    expect(h.tools.get("plan_steps")?.description).toContain("call it again");
+  });
+
+  test("denies one call after 8 tool calls with no plan or progress update, then starts counting again", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Build my landing page",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Read brand notes", "Build pricing section"] });
+
+    for (let i = 0; i < 8; i++) {
+      expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
+    }
+    const drift = await h.callTool("bash", { command: "ls" });
+    expect(drift.blocked).toBe(true);
+    expect(drift.reason).toContain("plan_steps");
+    expect(drift.reason).toContain("report_progress");
+
+    // The retry goes through, and a progress report restarts the count.
+    expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
+    await h.callTool("report_progress", { task: "Read brand notes", percent: 50 });
+    for (let i = 0; i < 8; i++) {
+      expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
+    }
+    expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(true);
+  });
+
+  test("a to-do update resets the quiet-call count, and calls nested in codemode are not counted", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Build my landing page",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Read brand notes", "Build pricing section"] });
+
+    for (let i = 0; i < 20; i++) {
+      expect((await h.callTool("bash", { command: "ls" }, "codemode-1")).blocked).toBe(false);
+    }
+    for (let i = 0; i < 8; i++) await h.callTool("bash", { command: "ls" });
+    await h.callTool("TaskUpdate", { taskId: "1", status: "in_progress" });
+    for (let i = 0; i < 8; i++) {
+      expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
+    }
   });
 
   test("a turn that ends while subagents run reads Waiting, then resumes when they report back", async () => {

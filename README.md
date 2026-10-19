@@ -17,6 +17,10 @@ animated 10-cell progress meters above the prompt.
   blocks other tools until a plan exists (`TodoWrite` / `todo`, `TaskCreate`,
   and `TaskUpdate` also satisfy the plan). In `codemode`, scripts must call
   `await tools.plan_steps(...)` before running other actions.
+- **Plan drift check:** After 8 tool calls with no `plan_steps`,
+  `report_progress`, or to-do update, the next call is sent back once, asking Pi
+  to replan or report progress. Calling `plan_steps` again keeps finished steps
+  checked off.
 - **Live progress meters:** Renders a 10-cell visual meter per task that
   tracks incremental completion percentages (0–100%).
 - **Contextual status headers:** Automatically transitions between `<Title> · <elapsed>`,

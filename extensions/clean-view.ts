@@ -49,6 +49,8 @@ const PROGRESS_TOOL = "report_progress";
 const DEFAULT_FRAME_MS = 250;
 const DEFAULT_COLLAPSE_MS = 5000;
 const FAILURES_TO_STUCK = 3;
+// Tool calls the checklist may sit unchanged through before the next one is sent back.
+const QUIET_CALLS = 8;
 
 const NEEDS_OK = "Pi needs your OK to continue";
 const HAS_QUESTION = "Pi has a question for you";
@@ -61,6 +63,8 @@ const SPAWN_TOOLS = new Set(["spawn_named_subagent", "spawn_inline_subagent"]);
 const SUBAGENT_COMPLETE = "subagent-complete";
 const SUBAGENT_DONE = new Set(["completed", "failed", "stopped"]);
 const INTERNAL_TOOLS = new Set([PLAN_TOOL, PROGRESS_TOOL]);
+// Tools that change the checklist, so a call to one restarts the quiet-call count.
+const PLAN_UPDATERS = new Set([PLAN_TOOL, PROGRESS_TOOL, "todo", "TodoWrite", "TaskCreate", "TaskUpdate"]);
 
 const ALWAYS_ALLOWED = new Set([
   PLAN_TOOL,
@@ -79,6 +83,7 @@ The person sees a plain checklist of your plan instead of your tool calls.
 
 - For every request, even a quick question, call \`${PLAN_TOOL}\` first with a short job title and every step of the job (2 to 8 short names in order). If you use \`codemode\`, call \`await tools.${PLAN_TOOL}({ ... })\` before calling any other tool.
 - Call \`${PROGRESS_TOOL}\` as real progress happens, and with percent 100 the moment a step finishes.
+- If the job grows past your plan (extra checks, cleanup, undoing changes, a new kind of work), call \`${PLAN_TOOL}\` again with the full updated list before you do it. Keep finished step names the same so they stay checked off.
 - When a step spawns subagents, keep its progress below 100% until you have collected the subagent results (\`get_subagent_result\`).
 - If the person sends a mid-job message or status check while steps remain, answer briefly and include your next tool call in the same response so the job keeps moving.
 - Write every step name in plain English a non-technical person understands, under 40 characters, starting with a verb, like "Build the pricing section".
@@ -155,6 +160,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   let checklist: CleanViewChecklist = EMPTY;
   let tick = 0;
   let failures = 0;
+  let quietCalls = 0;
   let waitingOnSubagents = 0;
   // Subagents spawned and not yet reported back; each sends one subagent-complete message.
   const runningSubagents = new Set<string>();
@@ -376,7 +382,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     name: PLAN_TOOL,
     label: "Plan steps",
     description:
-      "Lay out every step of the job up front so the person sees the plan: 2 to 8 short plain-English step names in order, each under 40 characters and starting with a verb. The first step starts right away.",
+      "Lay out every step of the job up front so the person sees the plan: 2 to 8 short plain-English step names in order, each under 40 characters and starting with a verb. The first step starts right away. If the job grows past the plan, call it again with the full updated list and keep finished step names unchanged.",
     promptSnippet: "Lay out the plain-English checklist steps for the current job",
     parameters: PlanStepsParams,
     async execute(_toolCallId, params) {
@@ -513,6 +519,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       event.systemPromptOptions.sections.clean_view = SECTION;
     }
     if (event.messageType === "user" && event.prompt.trim() !== "") {
+      quietCalls = 0;
       // A plan left part way (Esc, a pause, a question, subagents) carries on: a typed prompt is usually a re-steer.
       if (PAUSED_PHASES.has(checklist.phase) && hasPlan(checklist)) {
         resumeJob();
@@ -553,6 +560,24 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       return {
         block: true,
         reason: `Clean View: call ${PLAN_TOOL} first to lay out the steps of this job, then try again.`,
+      };
+    }
+
+    // Work the checklist doesn't show: after QUIET_CALLS calls with no plan or progress update, send one back.
+    if (PLAN_UPDATERS.has(tool)) {
+      quietCalls = 0;
+    } else if (
+      enabled &&
+      isRunning(checklist) &&
+      hasPlan(checklist) &&
+      event.parentToolCallId === undefined &&
+      !ALWAYS_ALLOWED.has(tool) &&
+      ++quietCalls > QUIET_CALLS
+    ) {
+      quietCalls = 0;
+      return {
+        block: true,
+        reason: `Clean View: the checklist hasn't changed in ${QUIET_CALLS} tool calls. If the work has grown past these steps, call ${PLAN_TOOL} with the full updated list; otherwise call ${PROGRESS_TOOL} for the current step. Then try again.`,
       };
     }
 
