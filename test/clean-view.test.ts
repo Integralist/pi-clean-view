@@ -429,6 +429,55 @@ describe("extension integration", () => {
     expect(rendered).toMatch(/▶ Build pricing section\s+[█░]{10}\s+Working/);
   });
 
+  test("a turn that ends while subagents run reads Waiting, then resumes when they report back", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Audit SQL migrations", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Inventory SQL files", "Verify formatting"] });
+    const spawned = (id: string) => h.emit("tool_result", {
+      toolCallId: `spawn-${id}`, toolName: "spawn_inline_subagent", input: {},
+      content: [{ type: "text", text: "started" }],
+      details: { id, agent: "inline", status: "running", description: "check", unknownTools: [] },
+      isError: false,
+    });
+    const reported = (id: string) => h.emit("message_end", {
+      message: { role: "custom", customType: "subagent-complete", content: "done", display: true, details: { id }, timestamp: 1 },
+    });
+    const settle = async (text: string) => {
+      await h.emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] });
+      await h.emit("agent_settled", { aborted: false });
+    };
+    await spawned("sub-1");
+    await spawned("sub-2");
+    await reported("sub-2");
+
+    // One of two subagents still runs: Pi carries on by itself, so it is not Needs you or Ended
+    await settle("I started two checks in the background.");
+    let rendered = h.renderWidget(100).join("\n");
+    expect(rendered).toContain("⏳ Waiting on 1 subagent · Audit SQL migrations");
+    expect(rendered).not.toContain("Needs you");
+    expect(rendered).not.toContain("Ended");
+
+    // The last one reports back and wakes Pi: the same checklist resumes
+    await reported("sub-1");
+    await h.emit("before_agent_start", {
+      messageType: "custom",
+      message: { customType: "subagent-complete", content: "done", display: true, details: { id: "sub-1" } },
+      systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    rendered = h.renderWidget(100).join("\n");
+    expect(rendered).not.toContain("Waiting on");
+    expect(rendered).toMatch(/▶ Inventory SQL files\s+[█░]{10}\s+Working/);
+
+    // With nothing left running, a turn that ends mid-plan reads Ended
+    await settle("Checked the files.");
+    expect(h.renderWidget(100).join("\n")).toContain("■ Ended · Audit SQL migrations");
+  });
+
   test("tracks Needs you on ui_prompt_start, Stuck on 3 errors, and All done + collapse on agent_settled", async () => {
     vi.useFakeTimers();
     try {

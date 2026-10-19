@@ -8,7 +8,7 @@ export type CleanViewTask = {
   hasReported: boolean;
 };
 
-export type CleanViewPhase = "idle" | "working" | "needsYou" | "stuck" | "stopped" | "ended" | "done";
+export type CleanViewPhase = "idle" | "working" | "needsYou" | "stuck" | "stopped" | "waiting" | "ended" | "done";
 
 export type CleanViewChecklist = {
   title: string;
@@ -20,6 +20,8 @@ export type CleanViewChecklist = {
   startedAt: number;
   finishedAt: number | null;
   isCollapsed: boolean;
+  /** Subagents still running when the turn ended (phase `waiting`). */
+  waitingOn?: number;
 };
 
 export type TodoItem = {

@@ -139,6 +139,10 @@ export class CleanViewWidget implements Component {
         return ANSI_YELLOW(`⚠ Stuck: ${list.stuckReason ?? ""}`);
       case "stopped":
         return `■ Stopped · ${list.title} · you pressed Esc`;
+      case "waiting": {
+        const count = list.waitingOn ?? 1;
+        return `⏳ Waiting on ${count} subagent${count === 1 ? "" : "s"} · ${list.title}`;
+      }
       case "ended": {
         const done = list.tasks.filter((one) => one.status === "done").length;
         return `■ Ended · ${list.title} · ${done} of ${list.tasks.length} steps done`;

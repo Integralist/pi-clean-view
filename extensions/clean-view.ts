@@ -55,6 +55,10 @@ const ASKED = "Pi asked a question above — reply to continue";
 const SAID_NO = "you said no to a step, so Pi paused";
 const KEEPS_FAILING = "a step keeps failing, Pi is trying another way";
 const SUBAGENT_WAIT_HINT = "waiting on subagents";
+// pi-subagents' spawn tools, and the message each subagent sends once when it finishes.
+const SPAWN_TOOLS = new Set(["spawn_named_subagent", "spawn_inline_subagent"]);
+const SUBAGENT_COMPLETE = "subagent-complete";
+const SUBAGENT_DONE = new Set(["completed", "failed", "stopped"]);
 const INTERNAL_TOOLS = new Set([PLAN_TOOL, PROGRESS_TOOL]);
 
 const ALWAYS_ALLOWED = new Set([
@@ -151,6 +155,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   let tick = 0;
   let failures = 0;
   let waitingOnSubagents = 0;
+  // Subagents spawned and not yet reported back; each sends one subagent-complete message.
+  const runningSubagents = new Set<string>();
   let lastAssistantText = "";
   let ticker: ReturnType<typeof setInterval> | undefined;
   let collapseTimer: ReturnType<typeof setTimeout> | undefined;
@@ -262,8 +268,15 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       stuckReason: null,
       activityHint: waitingOnSubagents > 0 ? SUBAGENT_WAIT_HINT : null,
       finishedAt: null,
+      waitingOn: undefined,
     }));
     startTicker();
+  }
+
+  function subagentReported(message: { customType?: unknown; details?: unknown } | undefined): void {
+    if (message?.customType !== SUBAGENT_COMPLETE) return;
+    const id = (message.details as { id?: unknown } | undefined)?.id;
+    if (typeof id === "string") runningSubagents.delete(id);
   }
 
   function ensureJob(): void {
@@ -479,6 +492,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     toolInvalidators.clear();
     syncActiveTools();
     mountWidget(ctx);
+    runningSubagents.clear();
     if (isRunning(checklist)) {
       startTicker();
     }
@@ -498,14 +512,22 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       event.systemPromptOptions.sections.clean_view = SECTION;
     }
     if (event.messageType === "user" && event.prompt.trim() !== "") {
-      if ((checklist.phase === "needsYou" || checklist.phase === "ended") && hasPlan(checklist)) {
+      const isPaused = checklist.phase === "needsYou" || checklist.phase === "waiting" || checklist.phase === "ended";
+      if (isPaused && hasPlan(checklist)) {
         resumeJob();
       } else {
         startJob(event.prompt);
       }
     } else if (event.messageType === "custom" && checklist.phase !== "idle" && checklist.phase !== "done") {
+      subagentReported(event.message);
       resumeJob();
     }
+    return undefined;
+  });
+
+  // A subagent's report can land while Pi is busy or idle; either way it is no longer running.
+  pi.on("message_end", (event) => {
+    if (event.message.role === "custom") subagentReported(event.message);
     return undefined;
   });
 
@@ -567,6 +589,12 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
     backToWork();
     const input = event.input as Record<string, unknown>;
+    if (SPAWN_TOOLS.has(event.toolName) && !event.isError) {
+      const spawned = event.details as { id?: unknown; status?: unknown } | undefined;
+      if (typeof spawned?.id === "string" && spawned.id !== "" && !SUBAGENT_DONE.has(String(spawned.status))) {
+        runningSubagents.add(spawned.id);
+      }
+    }
     if (event.toolName === "TaskCreate" && !event.isError) {
       const details = event.details as { task?: { id?: string; subject?: string } } | undefined;
       const id = details?.task?.id;
@@ -620,11 +648,16 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
     finish((list) => {
       if (list.phase === "stuck") return { ...list, activityHint: null };
-      // Steps left over need the person only when the turn ended on a question.
+      // Steps left over need the person only when the turn ended on a question;
+      // with subagents still running, Pi carries on when they report back.
       if (list.tasks.some((one) => one.status !== "done")) {
-        return endsWithQuestion(lastAssistantText)
-          ? { ...list, phase: "needsYou", needsYouReason: ASKED, activityHint: null }
-          : { ...list, phase: "ended", needsYouReason: null, activityHint: null };
+        if (endsWithQuestion(lastAssistantText)) {
+          return { ...list, phase: "needsYou", needsYouReason: ASKED, activityHint: null };
+        }
+        if (runningSubagents.size > 0) {
+          return { ...list, phase: "waiting", needsYouReason: null, activityHint: null, waitingOn: runningSubagents.size };
+        }
+        return { ...list, phase: "ended", needsYouReason: null, activityHint: null };
       }
       return { ...list, phase: "done", needsYouReason: null, activityHint: null };
     });
