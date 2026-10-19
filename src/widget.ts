@@ -107,7 +107,10 @@ export class CleanViewWidget implements Component {
     const nameWidth = Math.max(8, width - (2 + 1 + METER_CELLS + 2 + 7));
     const firstUpcoming = list.tasks.findIndex((one) => one.status === "upcoming");
     const rows = list.tasks.map((one, i) =>
-      truncateToWidth(this.renderRow(one, i === firstUpcoming, list.phase === "needsYou", frame, nameWidth), width),
+      truncateToWidth(
+        this.renderRow(one, i === firstUpcoming, list.phase === "needsYou" || list.phase === "ended", frame, nameWidth),
+        width,
+      ),
     );
     return [headerLine, ...rows];
   }
@@ -136,6 +139,10 @@ export class CleanViewWidget implements Component {
         return ANSI_YELLOW(`⚠ Stuck: ${list.stuckReason ?? ""}`);
       case "stopped":
         return `■ Stopped · ${list.title} · you pressed Esc`;
+      case "ended": {
+        const done = list.tasks.filter((one) => one.status === "done").length;
+        return `■ Ended · ${list.title} · ${done} of ${list.tasks.length} steps done`;
+      }
       case "done":
         return `${ANSI_GREEN("✓ All done")} · ${list.title} · took ${took}`;
       default: {

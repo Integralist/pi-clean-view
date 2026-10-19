@@ -596,7 +596,7 @@ describe("extension integration", () => {
     expect(h2.renderWidget(80)[0]).toContain("[ ○ Clean View: OFF ]");
   });
 
-  test("handles codemode plan_steps gate, abort -> Stopped, API error -> Stuck, and incomplete steps -> Needs you", async () => {
+  test("handles codemode plan_steps gate, abort -> Stopped, API error -> Stuck, and incomplete steps -> Ended", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);
     const h = createHarness({ directory: dir, now: () => 2000 });
@@ -619,7 +619,7 @@ describe("extension integration", () => {
     expect(allowedCodemode.blocked).toBe(false);
     await h.callTool("plan_steps", { steps: ["Inventory SQL files", "Verify formatting"] }, "codemode-1");
 
-    // Settling while a step is still active without a question shows actionable "Paused on ... — type \"continue\" to resume"
+    // Settling mid-plan without a question needs nothing from the person: it reads Ended, not Needs you
     await h.emit("agent_end", {
       messages: [
         {
@@ -630,10 +630,11 @@ describe("extension integration", () => {
       ],
     });
     await h.emit("agent_settled", { aborted: false });
-    expect(h.renderWidget(100).join("\n")).toContain("Needs you");
-    expect(h.renderWidget(100).join("\n")).toContain('Paused on "Inventory SQL files" — type "continue" to resume');
+    expect(h.renderWidget(100).join("\n")).not.toContain("Needs you");
+    expect(h.renderWidget(100).join("\n")).toContain("■ Ended · Audit SQL migrations · 0 of 2 steps done");
+    expect(h.renderWidget(100).join("\n")).toMatch(/‖ Inventory SQL files/);
 
-    // Replying "continue" while in needsYou resumes the existing checklist instead of wiping it
+    // Replying "continue" to an ended plan resumes the existing checklist instead of wiping it
     await h.emit("before_agent_start", {
       messageType: "user",
       prompt: "continue",

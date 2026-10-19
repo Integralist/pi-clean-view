@@ -228,14 +228,9 @@ export function errorSentence(answer: string): string {
   return "something went wrong talking to the model, try again";
 }
 
-export function pausedNeedsYouReason(list: CleanViewChecklist, lastAssistantText: string): string {
-  if (lastAssistantText.trim().endsWith("?")) {
-    return "Pi asked a question above — reply to continue";
-  }
-  const current = list.tasks.find((t) => t.status === "active") ?? list.tasks.find((t) => t.status !== "done");
-  return current
-    ? `Paused on "${current.name}" — type "continue" to resume`
-    : 'Paused — type "continue" to resume';
+/** True when a turn's last words put a question to the person. */
+export function endsWithQuestion(text: string): boolean {
+  return text.trim().endsWith("?");
 }
 
 export function isUserRejection(text: string | undefined): boolean {

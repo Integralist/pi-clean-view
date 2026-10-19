@@ -23,8 +23,8 @@ import {
   hasPlan,
   isRunning,
   isUserRejection,
+  endsWithQuestion,
   newJob,
-  pausedNeedsYouReason,
   PLACEHOLDER_TITLE,
   planSteps,
   reportProgress,
@@ -51,6 +51,7 @@ const FAILURES_TO_STUCK = 3;
 
 const NEEDS_OK = "Pi needs your OK to continue";
 const HAS_QUESTION = "Pi has a question for you";
+const ASKED = "Pi asked a question above — reply to continue";
 const SAID_NO = "you said no to a step, so Pi paused";
 const KEEPS_FAILING = "a step keeps failing, Pi is trying another way";
 const SUBAGENT_WAIT_HINT = "waiting on subagents";
@@ -497,7 +498,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       event.systemPromptOptions.sections.clean_view = SECTION;
     }
     if (event.messageType === "user" && event.prompt.trim() !== "") {
-      if (checklist.phase === "needsYou" && hasPlan(checklist)) {
+      if ((checklist.phase === "needsYou" || checklist.phase === "ended") && hasPlan(checklist)) {
         resumeJob();
       } else {
         startJob(event.prompt);
@@ -619,21 +620,20 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
     finish((list) => {
       if (list.phase === "stuck") return { ...list, activityHint: null };
+      // Steps left over need the person only when the turn ended on a question.
       if (list.tasks.some((one) => one.status !== "done")) {
-        return {
-          ...list,
-          phase: "needsYou",
-          needsYouReason: pausedNeedsYouReason(list, lastAssistantText),
-          activityHint: null,
-        };
+        return endsWithQuestion(lastAssistantText)
+          ? { ...list, phase: "needsYou", needsYouReason: ASKED, activityHint: null }
+          : { ...list, phase: "ended", needsYouReason: null, activityHint: null };
       }
       return { ...list, phase: "done", needsYouReason: null, activityHint: null };
     });
-    if (checklist.phase === "done") {
+    if (checklist.phase === "done" || checklist.phase === "ended") {
       const startedAt = checklist.startedAt;
+      const phase = checklist.phase;
       collapseTimer = setTimeout(() => {
         collapseTimer = undefined;
-        if (checklist.startedAt === startedAt && checklist.phase === "done") {
+        if (checklist.startedAt === startedAt && checklist.phase === phase) {
           edit((list) => ({ ...list, isCollapsed: true }));
         }
       }, collapseMs);
