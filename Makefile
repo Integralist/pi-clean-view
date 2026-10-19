@@ -1,4 +1,4 @@
-.PHONY: deps test typecheck verify load-check try try-isolated
+.PHONY: deps test typecheck verify load-check try
 
 deps:
 	npm install --ignore-scripts --legacy-peer-deps
@@ -14,8 +14,7 @@ verify: test typecheck load-check
 load-check:
 	node --import tsx --input-type=module -e 'const m = await import("./extensions/clean-view.ts"); if (typeof m.default !== "function") throw new Error("Missing extension factory"); console.log("Extension module loads");'
 
+# Loads only this checkout: an installed copy of Clean View would register the
+# same tools and refuse to load beside it.
 try:
-	pi -e ./extensions/clean-view.ts
-
-try-isolated:
 	pi --no-extensions -e ./extensions/clean-view.ts

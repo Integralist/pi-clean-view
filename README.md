@@ -42,3 +42,7 @@ make deps
 make verify
 make try
 ```
+
+`make try` starts Pi with only this checkout's extension loaded. Your other
+extensions are off for that session, including any installed copy of Clean
+View, which would register the same tools and refuse to load beside it.
