@@ -249,7 +249,7 @@ export function duration(ms: number): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-/** Ten cells: full, filled to the percent, a moving sweep, or empty. */
+/** Ten cells: full, filled to the percent with the next cell pulsing, a moving sweep, or empty. */
 export function meter(one: CleanViewTask, frame: number): string {
   if (one.status === "done") return "█".repeat(METER_CELLS);
   if (one.status === "upcoming") return "░".repeat(METER_CELLS);
@@ -260,7 +260,8 @@ export function meter(one: CleanViewTask, frame: number): string {
     ).join("");
   }
   const filled = Math.round(one.percent / 10);
-  return "█".repeat(filled) + "░".repeat(METER_CELLS - filled);
+  if (filled >= METER_CELLS || frame % 2 === 0) return "█".repeat(filled) + "░".repeat(METER_CELLS - filled);
+  return "█".repeat(filled) + "▒" + "░".repeat(METER_CELLS - filled - 1);
 }
 
 /** Phases where a plan was left part way; its active step draws as Paused. */

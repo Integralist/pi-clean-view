@@ -33,6 +33,7 @@ import {
   reportProgress,
   updateTask,
 } from "../src/logic.ts";
+import { STOP, TaskDetailsDialog } from "../src/inspector.ts";
 import type { CleanViewActivity, CleanViewChecklist, TodoItem } from "../src/types.ts";
 import { CleanViewWidget } from "../src/widget.ts";
 
@@ -44,6 +45,7 @@ export interface CleanViewOptions {
 }
 
 const COMMAND = "simple";
+const INSPECT_SHORTCUT = "ctrl+space";
 const WIDGET_KEY = "clean-view";
 const SETTINGS_FILE = "pi-clean-view.json";
 const PLAN_TOOL = "plan_steps";
@@ -84,7 +86,7 @@ const SECTION = `# Clean View checklist
 The person sees a plain checklist of your plan instead of your tool calls.
 
 - For every request, even a quick question, call \`${PLAN_TOOL}\` first with a short job title and every step of the job (2 to 8 short names in order). If you use \`codemode\`, call \`await tools.${PLAN_TOOL}({ ... })\` before calling any other tool.
-- Call \`${PROGRESS_TOOL}\` as real progress happens, and with percent 100 the moment a step finishes.
+- Call \`${PROGRESS_TOOL}\` after each item of a step (each file read, check run or section written), and at least every 3 tool calls, so the person never watches a percent sit still. Pass 100 the moment a step finishes.
 - If the job grows past your plan (extra checks, cleanup, undoing changes, a new kind of work), call \`${PLAN_TOOL}\` again with the full updated list before you do it. Keep finished step names the same so they stay checked off.
 - When a step spawns subagents, keep its progress below 100% until you have collected the subagent results (\`get_subagent_result\`).
 - If the person sends a mid-job message or status check while steps remain, answer briefly and include your next tool call in the same response so the job keeps moving.
@@ -154,7 +156,7 @@ function extractText(content: unknown): string {
 function toolActivity(toolName: string, finished = false): string {
   switch (toolName.toLowerCase()) {
     case "bash": return finished ? "Finished running a command" : "Running a command";
-    case "read": return finished ? "Finished reading files" : "Reading files";
+    case "read": return finished ? "Finished reading a file" : "Reading a file";
     case "grep":
     case "find":
     case "ls": return finished ? "Finished searching the project" : "Searching the project";
@@ -177,6 +179,9 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   let tick = 0;
   let failures = 0;
   let quietCalls = 0;
+  // Files read during the active step, so the activity shows real progress the model hasn't reported.
+  let readsInStep = 0;
+  let readsStepId: string | null = null;
   let waitingOnSubagents = 0;
   // Subagents spawned and not yet reported back; each sends one subagent-complete message.
   const runningSubagents = new Set<string>();
@@ -322,31 +327,40 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
   }
 
+  // Pi announces every dialog as a prompt; Clean View's own task details must not read as a question.
+  let isOwnDialogPending = false;
+  let isOwnDialogOpen = false;
+
   async function inspectTask(taskId: string, ctx: ExtensionContext | undefined = activeCtx): Promise<void> {
     if (!ctx?.hasUI) return;
-    const list = checklist;
-    const task = list.tasks.find((one) => one.id === taskId);
-    if (!task) return;
-    const index = list.tasks.indexOf(task);
-    const upcoming = list.tasks.findIndex((one) => one.status === "upcoming");
-    const status = label(task, index === upcoming, PAUSED_PHASES.has(list.phase));
-    const currentTime = now();
-    const progress = task.status === "done" ? "Complete" : task.hasReported ? `${task.percent}% reported` : "No percentage reported yet";
-    const lastActivity = list.activity
-      ? `${list.activity.summary} · ${list.activity.inProgress ? `for ${duration(currentTime - list.activity.at)}` : `${duration(currentTime - list.activity.at)} ago`}`
-      : "No visible activity recorded yet";
-    const details = [
-      `Task: ${task.name}`,
-      `Status: ${status}`,
-      `Progress: ${progress}`,
-      `Run elapsed: ${duration((list.finishedAt ?? currentTime) - list.startedAt)}`,
-      `Last visible activity: ${lastActivity}`,
-      "",
-      "Stop or Esc ends the entire run; it will not skip ahead to another task.",
-    ].join("\n");
-    const options = isRunning(list) ? ["Close", "Stop entire run"] : ["Close"];
-    const choice = await ctx.ui.select(details, options);
-    if (choice === "Stop entire run") ctx.abort();
+    const start = checklist.tasks.findIndex((one) => one.id === taskId);
+    if (start === -1) return;
+    // Read the checklist afresh on every render, so the ticker's redraws keep the dialog live.
+    const pages = () => {
+      const list = checklist;
+      const upcoming = list.tasks.findIndex((one) => one.status === "upcoming");
+      const isPaused = PAUSED_PHASES.has(list.phase);
+      const currentTime = now();
+      const elapsed = duration((list.finishedAt ?? currentTime) - list.startedAt);
+      const lastActivity = list.activity
+        ? `${list.activity.summary} · ${list.activity.inProgress ? `for ${duration(currentTime - list.activity.at)}` : `${duration(currentTime - list.activity.at)} ago`}`
+        : "No visible activity recorded yet";
+      return list.tasks.map((task, index) => ({
+        task,
+        isPaused,
+        status: label(task, index === upcoming, isPaused),
+        progress: task.status === "done" ? "Complete" : task.hasReported ? `${task.percent}% reported` : "No percentage reported yet",
+        elapsed,
+        activity: lastActivity,
+        canStop: isRunning(list),
+      }));
+    };
+    isOwnDialogPending = true;
+    const choice = await ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) =>
+      new TaskDetailsDialog(tui, theme, keybindings, pages, start, done),
+    );
+    isOwnDialogPending = false;
+    if (choice === STOP) ctx.abort();
   }
 
   function needsYou(reason: string): void {
@@ -485,6 +499,17 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     },
   });
 
+  async function inspectCurrent(ctx: ExtensionContext): Promise<void> {
+    const task = checklist.tasks.find((one) => one.status === "active") ?? checklist.tasks[0];
+    if (task) await inspectTask(task.id, ctx);
+    else ctx.ui.notify("There is no task to inspect", "info");
+  }
+
+  pi.registerShortcut(INSPECT_SHORTCUT, {
+    description: "Clean View: show task details",
+    handler: inspectCurrent,
+  });
+
   pi.registerCommand(COMMAND, {
     description: "Clean View: show the checklist, inspect the active task, or toggle visibility (on, off, inspect, or flip)",
     getArgumentCompletions: (prefix) =>
@@ -494,9 +519,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     handler: async (args, ctx) => {
       const arg = args.trim().toLowerCase();
       if (arg === "inspect") {
-        const task = checklist.tasks.find((one) => one.status === "active") ?? checklist.tasks[0];
-        if (task) await inspectTask(task.id, ctx);
-        else ctx.ui.notify("There is no task to inspect", "info");
+        await inspectCurrent(ctx);
         return;
       }
       const next = arg === "on" ? true : arg === "off" ? false : !enabled;
@@ -631,13 +654,30 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     return undefined;
   });
 
+  // Thinking and reply text are hidden or slow to appear, so name them in the header while they stream.
+  pi.on("message_update", (event) => {
+    const type = event.assistantMessageEvent.type;
+    const summary = type === "thinking_start" ? "Thinking" : type === "text_start" ? "Writing the reply" : undefined;
+    if (summary && isRunning(checklist)) edit((list) => ({ ...list, activity: activity(summary, true) }));
+    return undefined;
+  });
+
   pi.on("ui_prompt_start", (event) => {
+    if (isOwnDialogPending && event.kind === "custom") {
+      isOwnDialogPending = false;
+      isOwnDialogOpen = true;
+      return;
+    }
     setInputThinking(false);
     edit((list) => isRunning(list) ? { ...list, activity: activity("Waiting for your answer", false) } : list);
     needsYou(event.kind === "confirm" ? NEEDS_OK : HAS_QUESTION);
   });
 
-  pi.on("ui_prompt_end", () => {
+  pi.on("ui_prompt_end", (event) => {
+    if (isOwnDialogOpen && event.kind === "custom") {
+      isOwnDialogOpen = false;
+      return;
+    }
     backToWork();
   });
 
@@ -709,6 +749,16 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     return undefined;
   });
 
+  function countRead(): string {
+    const stepId = checklist.tasks.find((one) => one.status === "active")?.id ?? null;
+    if (stepId !== readsStepId) {
+      readsStepId = stepId;
+      readsInStep = 0;
+    }
+    readsInStep++;
+    return `Read ${readsInStep} file${readsInStep === 1 ? "" : "s"} in this step`;
+  }
+
   pi.on("tool_result", (event) => {
     if (event.toolName === "get_subagent_result") {
       waitingOnSubagents = Math.max(0, waitingOnSubagents - 1);
@@ -718,7 +768,11 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
     backToWork();
     if (!INTERNAL_TOOLS.has(event.toolName) && event.parentToolCallId === undefined) {
-      const summary = event.isError ? "A tool call failed" : toolActivity(event.toolName, true);
+      const summary = event.isError
+        ? "A tool call failed"
+        : event.toolName.toLowerCase() === "read"
+          ? countRead()
+          : toolActivity(event.toolName, true);
       edit((current) => ({ ...current, activity: activity(summary, false) }));
     }
     const input = event.input as Record<string, unknown>;

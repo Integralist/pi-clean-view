@@ -49,6 +49,7 @@ function createHarness(options: { directory?: string; now?: () => number; collap
   const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
   const tools = new Map<string, ToolDefinition<any, any, any>>();
   const commands = new Map<string, { description?: string; handler: (args: string, ctx: any) => Promise<void> }>();
+  const shortcuts = new Map<string, { description?: string; handler: (ctx: any) => Promise<void> | void }>();
   const toolRenderers: ToolRendererResolver[] = [];
   const notifications: Array<{ message: string; type?: string }> = [];
   const workingVisibleCalls: boolean[] = [];
@@ -122,6 +123,9 @@ function createHarness(options: { directory?: string; now?: () => number; collap
     registerCommand: (name: string, cmd: any) => {
       commands.set(name, cmd);
     },
+    registerShortcut: (key: string, shortcut: any) => {
+      shortcuts.set(key, shortcut);
+    },
     registerToolRenderer: (resolver: ToolRendererResolver) => {
       toolRenderers.push(resolver);
     },
@@ -185,6 +189,7 @@ function createHarness(options: { directory?: string; now?: () => number; collap
     theme,
     tools,
     commands,
+    shortcuts,
     notifications,
     workingVisibleCalls,
     hiddenThinkingLabels,
@@ -248,6 +253,9 @@ describe("logic", () => {
     expect(list.tasks[0]?.percent).toBe(60);
     expect(list.tasks[0]?.hasReported).toBe(true);
     expect(meter(list.tasks[0]!, 0)).toBe("██████░░░░");
+    // Between reports the next cell pulses, so a step waiting on its next report still looks alive.
+    expect(meter(list.tasks[0]!, 1)).toBe("██████▒░░░");
+    expect(meter(list.tasks[0]!, 2)).toBe("██████░░░░");
     expect(label(list.tasks[0]!, false)).toBe("60%");
 
     list = reportProgress(list, "Read brand notes", 100);
@@ -425,6 +433,8 @@ describe("extension integration", () => {
     // Must not return a replacement user message (preserves pi-auto-model compatibility)
     expect(beforeRes).toBeUndefined();
     expect(systemPromptOptions.sections.clean_view).toContain("plan_steps");
+    expect(systemPromptOptions.sections.clean_view).toContain("after each item");
+    expect(systemPromptOptions.sections.clean_view).toContain("at least every 3 tool calls");
 
     const blockedBash = await h.callTool("bash", { command: "ls" });
     expect(blockedBash.blocked).toBe(true);
@@ -495,13 +505,16 @@ describe("extension integration", () => {
     await h.callTool("plan_steps", { steps: ["Inspect the files", "Run the checks"] });
     await h.callTool("report_progress", { task: "Inspect the files", percent: 45 });
 
-    const dialogs: Array<{ title: string; options: string[] }> = [];
-    let choice = "Close";
+    const dialogs: string[] = [];
+    let keys = ["tui.select.confirm"];
     let aborts = 0;
-    (h.ctx.ui as any).select = async (title: string, options: string[]) => {
-      dialogs.push({ title, options });
-      return choice;
-    };
+    const keybindings = { matches: (data: string, id: string) => data === id };
+    (h.ctx.ui as any).custom = (factory: any) =>
+      new Promise((resolve) => {
+        const dialog = factory({ requestRender() {} }, h.theme, keybindings, resolve);
+        dialogs.push(dialog.render(80).join("\n"));
+        for (const key of keys) dialog.handleInput(key);
+      });
     h.ctx.abort = () => { aborts++; };
     h.renderWidget(80);
     const click = {
@@ -511,13 +524,12 @@ describe("extension integration", () => {
 
     expect(h.widgetComponent.handleMouse(click)?.handled).toBe(true);
     await Promise.resolve();
-    expect(dialogs[0]?.title).toContain("Inspect the files");
-    expect(dialogs[0]?.title).toContain("45%");
-    expect(dialogs[0]?.title).toContain("Last visible activity");
-    expect(dialogs[0]?.title).toContain("Progress reported · 0s ago");
-    expect(dialogs[0]?.title).toContain("Stop or Esc ends the entire run");
+    expect(dialogs[0]).toContain("Inspect the files");
+    expect(dialogs[0]).toContain("45% reported");
+    expect(dialogs[0]).toMatch(/Activity\s+Progress reported · 0s ago/);
+    expect(dialogs[0]).toContain("Stop entire run");
 
-    choice = "Stop entire run";
+    keys = ["tui.select.down", "tui.select.confirm"];
     h.widgetComponent.handleMouse(click);
     await Promise.resolve();
     expect(aborts).toBe(1);
@@ -528,10 +540,130 @@ describe("extension integration", () => {
     expect(stopped).toMatch(/○ Run the checks\s+[█░]{10}\s+Next/);
     expect(stopped).not.toMatch(/▶ Run the checks/);
 
-    choice = "Close";
+    keys = ["tui.select.confirm"];
     await h.commands.get("simple")!.handler("inspect", h.ctx);
     await Promise.resolve();
-    expect(dialogs.at(-1)?.title).toContain("Inspect the files");
+    expect(dialogs.at(-1)).toContain("Inspect the files");
+
+    const before = dialogs.length;
+    await h.shortcuts.get("ctrl+space")!.handler(h.ctx);
+    await Promise.resolve();
+    expect(dialogs.length).toBe(before + 1);
+    expect(dialogs.at(-1)).toContain("Inspect the files");
+    expect(dialogs.at(-1)).toContain("1/2");
+  });
+
+  test("counts the files read in the active step", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Open ten files and summarise them", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Read the files", "Summarise them"] });
+    for (const path of ["a.ts", "b.ts", "c.ts"]) await h.callTool("read", { path });
+    expect(h.renderWidget(120).join("\n")).toContain("Read 3 files in this step");
+
+    await h.callTool("report_progress", { task: "Read the files", percent: 100 });
+    await h.callTool("read", { path: "d.ts" });
+    expect(h.renderWidget(120).join("\n")).toContain("Read 1 file in this step");
+
+    await h.emit("tool_result", { toolCallId: "call-2", toolName: "read", input: { path: "e.ts" }, content: [], isError: true });
+    expect(h.renderWidget(120).join("\n")).toContain("A tool call failed");
+    await h.callTool("read", { path: "f.ts" });
+    expect(h.renderWidget(120).join("\n")).toContain("Read 2 files in this step");
+  });
+
+  test("opening task details is not a question for the person", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Inspect and verify the change", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Inspect the files", "Run the checks"] });
+
+    // Pi announces every dialog, Clean View's own included, as a prompt.
+    let close: (choice: string | undefined) => void = () => {};
+    (h.ctx.ui as any).custom = () => {
+      void h.emit("ui_prompt_start", { reason: "ui_prompt", kind: "custom" });
+      return new Promise((resolve) => { close = resolve; })
+        .finally(() => h.emit("ui_prompt_end", { reason: "ui_prompt", kind: "custom" }));
+    };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    void h.shortcuts.get("ctrl+space")!.handler(h.ctx);
+    await settle();
+    let band = h.renderWidget(80).join("\n");
+    expect(band).not.toContain("Needs you");
+    expect(band).not.toContain("Paused");
+    expect(band).not.toContain("Waiting for your answer");
+
+    close(undefined);
+    await settle();
+    expect(h.renderWidget(80).join("\n")).not.toContain("Needs you");
+
+    await h.emit("ui_prompt_start", { reason: "ui_prompt", kind: "confirm", title: "Run it?" });
+    expect(h.renderWidget(80).join("\n")).toContain("Needs you");
+  });
+
+  test("an open details dialog keeps its times and progress live", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    let clock = 1000;
+    const h = createHarness({ directory: dir, now: () => clock });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Inspect and verify the change", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Inspect the files", "Run the checks"] });
+    await h.callTool("report_progress", { task: "Inspect the files", percent: 20 });
+
+    let dialog: any;
+    const keybindings = { matches: (data: string, id: string) => data === id };
+    (h.ctx.ui as any).custom = (factory: any) =>
+      new Promise((resolve) => {
+        dialog = factory({ requestRender() {} }, h.theme, keybindings, resolve);
+      });
+    void h.commands.get("simple")!.handler("inspect", h.ctx);
+    await Promise.resolve();
+    expect(dialog.render(80).join("\n")).toContain("20% reported");
+    expect(dialog.render(80).join("\n")).toContain("Progress reported · 0s ago");
+
+    clock = 6000;
+    await h.callTool("report_progress", { task: "Inspect the files", percent: 70 });
+    clock = 9000;
+    const later = dialog.render(80).join("\n");
+    expect(later).toContain("70% reported");
+    expect(later).toContain("Progress reported · 3s ago");
+    dialog.handleInput("tui.select.cancel");
+  });
+
+  test("keeps showing the model at work after the last step is done", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Open ten files and summarise them", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Open the files"] });
+    await h.callTool("report_progress", { task: "Open the files", percent: 100 });
+
+    const update = (type: string) =>
+      h.emit("message_update", { message: { role: "assistant" }, assistantMessageEvent: { type } });
+
+    await update("thinking_start");
+    expect(h.renderWidget(80).join("\n")).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] .*· Thinking/);
+    await update("text_start");
+    expect(h.renderWidget(80).join("\n")).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] .*· Writing the reply/);
+
+    await h.emit("agent_settled", { aborted: false });
+    const done = h.renderWidget(80).join("\n");
+    expect(done).toContain("All done");
+    expect(done).not.toContain("Writing the reply");
   });
 
   test("tells the model it may replan when the job grows", async () => {

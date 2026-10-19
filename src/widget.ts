@@ -21,6 +21,8 @@ function styleActiveBar(bar: string): string {
   for (const ch of bar) {
     if (ch === "█") {
       out += "\x1b[38;2;0;166;204;48;2;28;69;87m█\x1b[39;49m";
+    } else if (ch === "▒") {
+      out += "\x1b[38;2;0;166;204;48;2;28;69;87m▒\x1b[39;49m";
     } else {
       out += "\x1b[38;2;28;69;87;48;2;28;69;87m░\x1b[39;49m";
     }
@@ -98,11 +100,11 @@ export class CleanViewWidget implements Component {
     const currentNow = live ? this.state.now() : (list.finishedAt ?? list.startedAt);
     const took = duration(currentNow - list.startedAt);
     const frame = live ? this.state.getFrame() : 0;
+    const maxHeaderWidth = Math.max(0, width - rightWidth - 1);
     const header = isThinking
       ? `${ANSI_CYAN(THINKING_FRAMES[frame % THINKING_FRAMES.length]!)} ${ANSI_BOLD("Thinking...")}`
-      : this.renderHeader(list, took);
+      : this.renderHeader(list, took, frame, maxHeaderWidth);
 
-    const maxHeaderWidth = Math.max(0, width - rightWidth - 1);
     const truncatedHeader = truncateToWidth(header, maxHeaderWidth);
     const headerWidth = visibleWidth(truncatedHeader);
     const gap = Math.max(1, width - headerWidth - rightWidth);
@@ -151,7 +153,7 @@ export class CleanViewWidget implements Component {
     return undefined;
   }
 
-  private renderHeader(list: CleanViewChecklist, took: string): string {
+  private renderHeader(list: CleanViewChecklist, took: string, frame: number, maxWidth: number): string {
     void this.getTheme;
     switch (list.phase) {
       case "needsYou":
@@ -171,8 +173,13 @@ export class CleanViewWidget implements Component {
       case "done":
         return `${ANSI_GREEN("✓ All done")} · ${list.title} · took ${took}`;
       default: {
-        const hint = list.activityHint ? ` · ${ANSI_DIM(list.activityHint)}` : "";
-        return `${ANSI_BOLD(list.title)} · ${took}${hint}`;
+        // The spinner and current activity keep the run visibly alive, even after the last step is done.
+        // The title gives way first, so a long one never pushes the activity out of sight.
+        const spinner = ANSI_CYAN(THINKING_FRAMES[frame % THINKING_FRAMES.length]!);
+        const doing = list.activityHint ?? list.activity?.summary;
+        const tail = ` · ${took}${doing ? ` · ${doing}` : ""}`;
+        const title = truncateToWidth(list.title, Math.max(8, maxWidth - 2 - visibleWidth(tail)));
+        return `${spinner} ${ANSI_BOLD(title)} · ${took}${doing ? ` · ${ANSI_DIM(doing)}` : ""}`;
       }
     }
   }

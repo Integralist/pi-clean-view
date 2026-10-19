@@ -25,9 +25,13 @@ animated 10-cell progress meters above the prompt.
   tracks incremental completion percentages (0–100%).
 - **Task details:** In fullscreen mode, click a task row to inspect its status,
   progress, run time, and last visible activity. Choose **Stop entire run** to
-  abort the whole turn; later tasks will not start. In regular terminal mode,
-  run `/simple inspect` to inspect the active task.
-- **Contextual status headers:** Automatically transitions between `<Title> · <elapsed>`,
+  abort the whole turn; later tasks will not start. From the keyboard, press
+  `Ctrl+Space`, or run `/simple inspect`, to open the active task,
+  then use `←`/`→` to switch tasks and `Esc` to close. The dialog updates live
+  while the run goes on.
+- **Contextual status headers:** Automatically transitions between
+  `<spinner> <Title> · <elapsed> · <activity>` (such as "Thinking" or "Writing
+  the reply", so the run stays visibly alive after the last step is done),
   **Needs you** (with human-readable reasons like waiting for confirmation or reply),
   **Stuck** (repeated failures), **Stopped**, and **All done** (auto-collapsing
   to a single summary line after 5 seconds).
