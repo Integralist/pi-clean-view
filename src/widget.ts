@@ -48,6 +48,8 @@ export class CleanViewWidget implements Component {
   private state: CleanViewWidgetState;
   private toggleRange: [number, number] | undefined;
   private collapseRange: [number, number] | undefined;
+  /** The row the toggle and collapse buttons sit on: below the blank line when the band shows. */
+  private headerRow = 0;
 
   constructor(getTheme: () => Theme, state: CleanViewWidgetState) {
     this.getTheme = getTheme;
@@ -59,6 +61,7 @@ export class CleanViewWidget implements Component {
   render(width: number): string[] {
     this.toggleRange = undefined;
     this.collapseRange = undefined;
+    this.headerRow = 0;
     if (width <= 0) return [];
 
     const enabled = this.state.isEnabled();
@@ -99,8 +102,10 @@ export class CleanViewWidget implements Component {
     this.toggleRange = [rightStart, rightStart + toggleWidth];
     this.collapseRange = [rightStart + toggleWidth + 1, rightStart + rightWidth];
 
+    // A blank line above the band keeps it clear of the spinner line.
+    this.headerRow = 1;
     if (list.isCollapsed) {
-      return [headerLine];
+      return ["", headerLine];
     }
 
     const frame = live ? this.state.getFrame() : 0;
@@ -112,11 +117,11 @@ export class CleanViewWidget implements Component {
         width,
       ),
     );
-    return [headerLine, ...rows];
+    return ["", headerLine, ...rows];
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-    if (event.type !== "click" || event.button !== "left" || event.y !== 0) {
+    if (event.type !== "click" || event.button !== "left" || event.y !== this.headerRow) {
       return undefined;
     }
     if (this.collapseRange && event.x >= this.collapseRange[0] && event.x < this.collapseRange[1]) {

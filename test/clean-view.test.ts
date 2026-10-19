@@ -323,7 +323,9 @@ describe("widget", () => {
     });
 
     const lines = widget.render(80);
-    expect(lines.length).toBe(5);
+    // A blank line above the band keeps it clear of the spinner line.
+    expect(lines.length).toBe(6);
+    expect(lines[0]).toBe("");
     for (const line of lines) {
       expect(visibleWidth(line)).toBeLessThanOrEqual(80);
     }
@@ -336,34 +338,39 @@ describe("widget", () => {
     expect(joined).toMatch(/○ Add the contact form\s+░{10}\s+Next/);
     expect(joined).toMatch(/○ Polish the footer\s+░{10}\s+Up next/);
 
-    // Click [-] at the right end of row 0 to collapse
+    // A click on the blank line above does nothing
+    expect(widget.handleMouse({
+      type: "click", button: "left", x: 78, y: 0, screenX: 78, screenY: 0, width: 80, height: 6, shift: false, alt: false, ctrl: false,
+    })).toBeUndefined();
+
+    // Click [-] at the right end of the header row to collapse
     const collapseResult = widget.handleMouse({
       type: "click",
       button: "left",
       x: 78,
-      y: 0,
+      y: 1,
       screenX: 78,
-      screenY: 0,
+      screenY: 1,
       width: 80,
-      height: 5,
+      height: 6,
       shift: false,
       alt: false,
       ctrl: false,
     });
     expect(collapseResult?.handled).toBe(true);
     expect(list.isCollapsed).toBe(true);
-    expect(widget.render(80).length).toBe(1);
+    expect(widget.render(80).length).toBe(2);
 
     // Click [ ● Clean View: ON ] to toggle enabled off
     const toggleResult = widget.handleMouse({
       type: "click",
       button: "left",
       x: 60,
-      y: 0,
+      y: 1,
       screenX: 60,
-      screenY: 0,
+      screenY: 1,
       width: 80,
-      height: 1,
+      height: 2,
       shift: false,
       alt: false,
       ctrl: false,
@@ -734,7 +741,7 @@ describe("extension integration", () => {
       toolName: "get_subagent_result",
       input: { id: "sub-1" },
     });
-    expect(h.renderWidget(100)[0]).toContain("waiting on subagents");
+    expect(h.renderWidget(100)[1]).toContain("waiting on subagents");
     await h.emit("tool_result", {
       toolCallId: "sub-wait-1",
       toolName: "get_subagent_result",
@@ -742,7 +749,7 @@ describe("extension integration", () => {
       content: [{ type: "text", text: "done" }],
       isError: false,
     });
-    expect(h.renderWidget(100)[0]).not.toContain("waiting on subagents");
+    expect(h.renderWidget(100)[1]).not.toContain("waiting on subagents");
 
     // Settling after the assistant asks a question (?) shows "Pi asked a question above — reply to continue"
     await h.emit("agent_end", {
