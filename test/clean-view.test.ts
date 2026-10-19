@@ -234,6 +234,7 @@ describe("logic", () => {
     let list = newJob(1000, "Build landing page");
     expect(isRunning(list)).toBe(true);
     expect(hasPlan(list)).toBe(false);
+    expect(list.tasks.map((task) => task.name)).toEqual(["Thinking..."]);
 
     list = planSteps(list, ["Read brand notes", "Build pricing section"], "Ship pricing page");
     expect(hasPlan(list)).toBe(true);
@@ -326,6 +327,7 @@ describe("widget", () => {
     const widget = new CleanViewWidget(() => createFakeTheme(), {
       isEnabled: () => enabled,
       getChecklist: () => list,
+      isThinking: () => false,
       getFrame: () => 0,
       now: () => 13000,
       onToggleEnabled: () => {
@@ -334,6 +336,7 @@ describe("widget", () => {
       onToggleCollapsed: () => {
         list = { ...list, isCollapsed: !list.isCollapsed };
       },
+      onInspectTask: () => {},
     });
 
     const lines = widget.render(80);
@@ -450,6 +453,85 @@ describe("extension integration", () => {
     const rendered = h.renderWidget(80).join("\n");
     expect(rendered).toMatch(/✓ Read brand notes\s+█{10}\s+Done/);
     expect(rendered).toMatch(/▶ Build pricing section\s+[█░]{10}\s+Working/);
+  });
+
+  test("shows Thinking as soon as steering arrives and replaces it with the new plan", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Finish the old task", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Finish the old task"] });
+    await h.callTool("report_progress", { task: "Finish the old task", percent: 100 });
+
+    await h.emit("input", { text: "Start a new task", source: "interactive", streamingBehavior: "steer" });
+    let rendered = h.renderWidget(80).join("\n");
+    expect(rendered).toContain("Thinking...");
+    expect(rendered).not.toContain("Finish the old task");
+
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Start a new task", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    rendered = h.renderWidget(80).join("\n");
+    expect(rendered).toContain("Thinking...");
+    expect(rendered).not.toContain("Understand your request");
+
+    await h.callTool("plan_steps", { title: "Start a new task", steps: ["Read the new notes"] });
+    rendered = h.renderWidget(80).join("\n");
+    expect(rendered).toContain("Read the new notes");
+    expect(rendered).not.toContain("Thinking...");
+  });
+
+  test("task clicks show details and can stop the whole run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Inspect and verify the change", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Inspect the files", "Run the checks"] });
+    await h.callTool("report_progress", { task: "Inspect the files", percent: 45 });
+
+    const dialogs: Array<{ title: string; options: string[] }> = [];
+    let choice = "Close";
+    let aborts = 0;
+    (h.ctx.ui as any).select = async (title: string, options: string[]) => {
+      dialogs.push({ title, options });
+      return choice;
+    };
+    h.ctx.abort = () => { aborts++; };
+    h.renderWidget(80);
+    const click = {
+      type: "click", button: "left", x: 10, y: 3, screenX: 10, screenY: 3, width: 80, height: 6,
+      shift: false, alt: false, ctrl: false,
+    } as const;
+
+    expect(h.widgetComponent.handleMouse(click)?.handled).toBe(true);
+    await Promise.resolve();
+    expect(dialogs[0]?.title).toContain("Inspect the files");
+    expect(dialogs[0]?.title).toContain("45%");
+    expect(dialogs[0]?.title).toContain("Last visible activity");
+    expect(dialogs[0]?.title).toContain("Progress reported · 0s ago");
+    expect(dialogs[0]?.title).toContain("Stop or Esc ends the entire run");
+
+    choice = "Stop entire run";
+    h.widgetComponent.handleMouse(click);
+    await Promise.resolve();
+    expect(aborts).toBe(1);
+    await h.emit("agent_settled", { aborted: true });
+    const stopped = h.renderWidget(80).join("\n");
+    expect(stopped).toContain("Stopped");
+    expect(stopped).toMatch(/‖ Inspect the files\s+[█░]{10}\s+Paused/);
+    expect(stopped).toMatch(/○ Run the checks\s+[█░]{10}\s+Next/);
+    expect(stopped).not.toMatch(/▶ Run the checks/);
+
+    choice = "Close";
+    await h.commands.get("simple")!.handler("inspect", h.ctx);
+    await Promise.resolve();
+    expect(dialogs.at(-1)?.title).toContain("Inspect the files");
   });
 
   test("tells the model it may replan when the job grows", async () => {

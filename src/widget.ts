@@ -33,14 +33,17 @@ function styleUpcomingBar(bar: string): string {
 }
 
 const WAITING = "Pi is waiting for your reply";
+const THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 export interface CleanViewWidgetState {
   isEnabled(): boolean;
   getChecklist(): CleanViewChecklist;
+  isThinking(): boolean;
   getFrame(): number;
   now(): number;
   onToggleEnabled(): void;
   onToggleCollapsed(): void;
+  onInspectTask(taskId: string): void;
 }
 
 export class CleanViewWidget implements Component {
@@ -50,6 +53,8 @@ export class CleanViewWidget implements Component {
   private collapseRange: [number, number] | undefined;
   /** The row the toggle and collapse buttons sit on: below the blank line when the band shows. */
   private headerRow = 0;
+  private taskRowStart = -1;
+  private taskIds: string[] = [];
 
   constructor(getTheme: () => Theme, state: CleanViewWidgetState) {
     this.getTheme = getTheme;
@@ -62,14 +67,17 @@ export class CleanViewWidget implements Component {
     this.toggleRange = undefined;
     this.collapseRange = undefined;
     this.headerRow = 0;
+    this.taskRowStart = -1;
+    this.taskIds = [];
     if (width <= 0) return [];
 
     const enabled = this.state.isEnabled();
     const list = this.state.getChecklist();
+    const isThinking = this.state.isThinking();
     const togglePlain = enabled ? "[ ● Clean View: ON ]" : "[ ○ Clean View: OFF ]";
     const toggleStyled = enabled ? ANSI_BOLD(togglePlain) : ANSI_DIM(togglePlain);
 
-    if (!enabled || list.phase === "idle") {
+    if (!enabled || (list.phase === "idle" && !isThinking)) {
       const toggleWidth = visibleWidth(togglePlain);
       if (toggleWidth >= width) {
         this.toggleRange = [0, width];
@@ -86,10 +94,13 @@ export class CleanViewWidget implements Component {
     const rightStyled = `${toggleStyled} ${collapseStyled}`;
     const rightWidth = visibleWidth(rightPlain);
 
-    const live = isRunning(list);
+    const live = isThinking || isRunning(list);
     const currentNow = live ? this.state.now() : (list.finishedAt ?? list.startedAt);
     const took = duration(currentNow - list.startedAt);
-    const header = this.renderHeader(list, took);
+    const frame = live ? this.state.getFrame() : 0;
+    const header = isThinking
+      ? `${ANSI_CYAN(THINKING_FRAMES[frame % THINKING_FRAMES.length]!)} ${ANSI_BOLD("Thinking...")}`
+      : this.renderHeader(list, took);
 
     const maxHeaderWidth = Math.max(0, width - rightWidth - 1);
     const truncatedHeader = truncateToWidth(header, maxHeaderWidth);
@@ -104,13 +115,13 @@ export class CleanViewWidget implements Component {
 
     // A blank line above the band keeps it clear of the spinner line.
     this.headerRow = 1;
-    if (list.isCollapsed) {
+    if (list.isCollapsed || isThinking) {
       return ["", headerLine];
     }
-
-    const frame = live ? this.state.getFrame() : 0;
     const nameWidth = Math.max(8, width - (2 + 1 + METER_CELLS + 2 + 7));
     const firstUpcoming = list.tasks.findIndex((one) => one.status === "upcoming");
+    this.taskRowStart = 3;
+    this.taskIds = list.tasks.map((one) => one.id);
     const rows = list.tasks.map((one, i) =>
       truncateToWidth(
         this.renderRow(one, i === firstUpcoming, PAUSED_PHASES.has(list.phase), frame, nameWidth),
@@ -121,9 +132,14 @@ export class CleanViewWidget implements Component {
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-    if (event.type !== "click" || event.button !== "left" || event.y !== this.headerRow) {
-      return undefined;
+    if (event.type !== "click" || event.button !== "left") return undefined;
+    const taskIndex = event.y - this.taskRowStart;
+    const taskId = this.taskIds[taskIndex];
+    if (this.taskRowStart > 0 && taskIndex >= 0 && taskId !== undefined) {
+      this.state.onInspectTask(taskId);
+      return { handled: true };
     }
+    if (event.y !== this.headerRow) return undefined;
     if (this.collapseRange && event.x >= this.collapseRange[0] && event.x < this.collapseRange[1]) {
       this.state.onToggleCollapsed();
       return { handled: true };

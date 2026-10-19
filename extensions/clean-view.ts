@@ -16,6 +16,7 @@ import { Type } from "typebox";
 import {
   addTask,
   clampPercent,
+  duration,
   EMPTY,
   errorSentence,
   fallbackTitle,
@@ -24,6 +25,7 @@ import {
   isRunning,
   isUserRejection,
   endsWithQuestion,
+  label,
   PAUSED_PHASES,
   newJob,
   PLACEHOLDER_TITLE,
@@ -31,7 +33,7 @@ import {
   reportProgress,
   updateTask,
 } from "../src/logic.ts";
-import type { CleanViewChecklist, TodoItem } from "../src/types.ts";
+import type { CleanViewActivity, CleanViewChecklist, TodoItem } from "../src/types.ts";
 import { CleanViewWidget } from "../src/widget.ts";
 
 export interface CleanViewOptions {
@@ -149,6 +151,20 @@ function extractText(content: unknown): string {
     .join("\n");
 }
 
+function toolActivity(toolName: string, finished = false): string {
+  switch (toolName.toLowerCase()) {
+    case "bash": return finished ? "Finished running a command" : "Running a command";
+    case "read": return finished ? "Finished reading files" : "Reading files";
+    case "grep":
+    case "find":
+    case "ls": return finished ? "Finished searching the project" : "Searching the project";
+    case "edit":
+    case "write": return finished ? "Finished updating files" : "Updating files";
+    case "codemode": return finished ? "Finished running a script" : "Running a script";
+    default: return finished ? "Finished using a tool" : "Using a tool";
+  }
+}
+
 export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = {}): void {
   const settingsPath = join(options.directory ?? getAgentDir(), SETTINGS_FILE);
   const frameMs = options.frameMs ?? DEFAULT_FRAME_MS;
@@ -165,6 +181,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   // Subagents spawned and not yet reported back; each sends one subagent-complete message.
   const runningSubagents = new Set<string>();
   let lastAssistantText = "";
+  let inputThinking = false;
   let ticker: ReturnType<typeof setInterval> | undefined;
   let collapseTimer: ReturnType<typeof setTimeout> | undefined;
   let activeTui: TUI | undefined;
@@ -201,6 +218,14 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
   }
 
+  function setInputThinking(value: boolean): void {
+    if (inputThinking === value) return;
+    inputThinking = value;
+    if (value) startTicker();
+    else if (!isRunning(checklist)) stopTicker();
+    requestRender();
+  }
+
   function clearCollapseTimer(): void {
     if (collapseTimer !== undefined) {
       clearTimeout(collapseTimer);
@@ -216,6 +241,10 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   function edit(fn: (current: CleanViewChecklist) => CleanViewChecklist): void {
     checklist = fn(checklist);
     requestRender();
+  }
+
+  function activity(summary: string, inProgress: boolean, at = now()): CleanViewActivity {
+    return { summary, at, inProgress };
   }
 
   function applyWorkingVisibility(ctx: ExtensionContext | undefined): void {
@@ -271,6 +300,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     edit((list) => ({
       ...list,
       phase: "working",
+      activity: activity("Resumed the task list", true),
       needsYouReason: null,
       stuckReason: null,
       activityHint: waitingOnSubagents > 0 ? SUBAGENT_WAIT_HINT : null,
@@ -290,6 +320,33 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     if (!isRunning(checklist)) {
       startJob("");
     }
+  }
+
+  async function inspectTask(taskId: string, ctx: ExtensionContext | undefined = activeCtx): Promise<void> {
+    if (!ctx?.hasUI) return;
+    const list = checklist;
+    const task = list.tasks.find((one) => one.id === taskId);
+    if (!task) return;
+    const index = list.tasks.indexOf(task);
+    const upcoming = list.tasks.findIndex((one) => one.status === "upcoming");
+    const status = label(task, index === upcoming, PAUSED_PHASES.has(list.phase));
+    const currentTime = now();
+    const progress = task.status === "done" ? "Complete" : task.hasReported ? `${task.percent}% reported` : "No percentage reported yet";
+    const lastActivity = list.activity
+      ? `${list.activity.summary} · ${list.activity.inProgress ? `for ${duration(currentTime - list.activity.at)}` : `${duration(currentTime - list.activity.at)} ago`}`
+      : "No visible activity recorded yet";
+    const details = [
+      `Task: ${task.name}`,
+      `Status: ${status}`,
+      `Progress: ${progress}`,
+      `Run elapsed: ${duration((list.finishedAt ?? currentTime) - list.startedAt)}`,
+      `Last visible activity: ${lastActivity}`,
+      "",
+      "Stop or Esc ends the entire run; it will not skip ahead to another task.",
+    ].join("\n");
+    const options = isRunning(list) ? ["Close", "Stop entire run"] : ["Close"];
+    const choice = await ctx.ui.select(details, options);
+    if (choice === "Stop entire run") ctx.abort();
   }
 
   function needsYou(reason: string): void {
@@ -319,9 +376,15 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   }
 
   function finish(fn: (list: CleanViewChecklist) => CleanViewChecklist): void {
+    setInputThinking(false);
     const finishedAt = now();
     stopTicker();
-    edit((list) => (list.phase === "idle" ? list : fn({ ...list, finishedAt })));
+    edit((list) => {
+      if (list.phase === "idle") return list;
+      const finished = fn({ ...list, finishedAt });
+      const summary = finished.phase === "stopped" ? "Run stopped" : finished.phase === "stuck" ? "Run needs attention" : finished.phase === "waiting" ? "Waiting for background work" : "Run finished";
+      return { ...finished, activity: activity(summary, false, finishedAt) };
+    });
   }
 
   function mountWidget(ctx: ExtensionContext): void {
@@ -335,12 +398,14 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         const widget = new CleanViewWidget(() => ctx.ui.theme ?? theme, {
           isEnabled: () => enabled,
           getChecklist: () => checklist,
+          isThinking: () => inputThinking,
           getFrame: () => tick,
           now,
           onToggleEnabled: () => setEnabled(!enabled, ctx),
           onToggleCollapsed: () => {
             edit((list) => ({ ...list, isCollapsed: !list.isCollapsed }));
           },
+          onInspectTask: (taskId) => { void inspectTask(taskId, activeCtx); },
         });
         return Object.assign(widget, {
           dispose() {
@@ -391,7 +456,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         : [];
       const title = typeof params.title === "string" ? params.title : undefined;
       ensureJob();
-      edit((list) => planSteps(list, names, title));
+      edit((list) => ({ ...planSteps(list, names, title), activity: activity("Plan updated", false) }));
+      setInputThinking(false);
       return {
         content: [{ type: "text", text: `Planned ${checklist.tasks.length} steps. The first one has started.` }],
         details: { steps: checklist.tasks.map((t) => t.name), title: checklist.title },
@@ -410,7 +476,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       const name = typeof params.task === "string" ? params.task : "";
       const percent = typeof params.percent === "number" ? params.percent : Number(params.percent);
       ensureJob();
-      edit((list) => reportProgress(list, name, percent));
+      edit((list) => ({ ...reportProgress(list, name, percent), activity: activity("Progress reported", false) }));
+      setInputThinking(false);
       return {
         content: [{ type: "text", text: `Progress noted: ${clampPercent(percent)}%.` }],
         details: { task: name, percent: clampPercent(percent) },
@@ -419,13 +486,19 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   });
 
   pi.registerCommand(COMMAND, {
-    description: "Clean View: hide tool details and show a plain checklist (on, off, or flip)",
+    description: "Clean View: show the checklist, inspect the active task, or toggle visibility (on, off, inspect, or flip)",
     getArgumentCompletions: (prefix) =>
-      ["on", "off"]
+      ["on", "off", "inspect"]
         .filter((item) => item.startsWith(prefix.toLowerCase()))
         .map((value) => ({ value, label: value })),
     handler: async (args, ctx) => {
       const arg = args.trim().toLowerCase();
+      if (arg === "inspect") {
+        const task = checklist.tasks.find((one) => one.status === "active") ?? checklist.tasks[0];
+        if (task) await inspectTask(task.id, ctx);
+        else ctx.ui.notify("There is no task to inspect", "info");
+        return;
+      }
       const next = arg === "on" ? true : arg === "off" ? false : !enabled;
       setEnabled(next, ctx);
     },
@@ -495,6 +568,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   });
 
   pi.on("session_start", (_event, ctx) => {
+    inputThinking = false;
     enabled = loadEnabled(settingsPath);
     toolInvalidators.clear();
     syncActiveTools();
@@ -510,6 +584,23 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     toolInvalidators.clear();
     activeTui = undefined;
     activeCtx = undefined;
+  });
+
+  pi.on("input", (event, ctx) => {
+    const text = event.text.trim();
+    if (
+      !enabled ||
+      !ctx.hasUI ||
+      ctx.mode !== "tui" ||
+      event.source === "extension" ||
+      event.streamingBehavior === undefined ||
+      (text === "" && (event.images?.length ?? 0) === 0) ||
+      text.startsWith("/")
+    ) {
+      return { action: "continue" };
+    }
+    setInputThinking(true);
+    return { action: "continue" };
   });
 
   pi.on("before_agent_start", (event, ctx) => {
@@ -541,6 +632,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   });
 
   pi.on("ui_prompt_start", (event) => {
+    setInputThinking(false);
+    edit((list) => isRunning(list) ? { ...list, activity: activity("Waiting for your answer", false) } : list);
     needsYou(event.kind === "confirm" ? NEEDS_OK : HAS_QUESTION);
   });
 
@@ -581,11 +674,18 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       };
     }
 
+    if (!ALWAYS_ALLOWED.has(tool) && !PLAN_UPDATERS.has(tool) && !isCodemodeWithPlan) {
+      setInputThinking(false);
+    }
+    if (!INTERNAL_TOOLS.has(tool) && event.parentToolCallId === undefined) {
+      edit((current) => ({ ...current, activity: activity(toolActivity(tool), true) }));
+    }
     backToWork();
     const input = event.input as Record<string, unknown>;
     if ((tool === "TodoWrite" || tool === "todo") && Array.isArray(input?.todos)) {
       ensureJob();
       edit((current) => fromTodos(current, input.todos as TodoItem[]));
+      setInputThinking(false);
     }
     if (tool === "TaskUpdate" && typeof input?.taskId === "string") {
       edit((current) =>
@@ -596,8 +696,10 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
           typeof input.subject === "string" ? input.subject : undefined,
         ),
       );
+      setInputThinking(false);
     }
     if (tool === "AskUserQuestion") {
+      setInputThinking(false);
       needsYou(HAS_QUESTION);
     }
     if (tool === "get_subagent_result") {
@@ -615,6 +717,10 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       }
     }
     backToWork();
+    if (!INTERNAL_TOOLS.has(event.toolName) && event.parentToolCallId === undefined) {
+      const summary = event.isError ? "A tool call failed" : toolActivity(event.toolName, true);
+      edit((current) => ({ ...current, activity: activity(summary, false) }));
+    }
     const input = event.input as Record<string, unknown>;
     if (SPAWN_TOOLS.has(event.toolName) && !event.isError) {
       const spawned = event.details as { id?: unknown; status?: unknown } | undefined;
@@ -628,7 +734,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       const subject = details?.task?.subject ?? (typeof input?.subject === "string" ? input.subject : undefined);
       if (id && subject) {
         ensureJob();
-        edit((current) => addTask(current, id, subject));
+        edit((current) => ({ ...addTask(current, id, subject), activity: activity("Task list updated", false) }));
+        setInputThinking(false);
       }
     }
 

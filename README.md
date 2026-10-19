@@ -23,6 +23,10 @@ animated 10-cell progress meters above the prompt.
   checked off.
 - **Live progress meters:** Renders a 10-cell visual meter per task that
   tracks incremental completion percentages (0–100%).
+- **Task details:** In fullscreen mode, click a task row to inspect its status,
+  progress, run time, and last visible activity. Choose **Stop entire run** to
+  abort the whole turn; later tasks will not start. In regular terminal mode,
+  run `/simple inspect` to inspect the active task.
 - **Contextual status headers:** Automatically transitions between `<Title> · <elapsed>`,
   **Needs you** (with human-readable reasons like waiting for confirmation or reply),
   **Stuck** (repeated failures), **Stopped**, and **All done** (auto-collapsing

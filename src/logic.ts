@@ -47,6 +47,7 @@ export const EMPTY: CleanViewChecklist = {
   title: "",
   phase: "idle",
   tasks: [],
+  activity: null,
   needsYouReason: null,
   stuckReason: null,
   activityHint: null,
@@ -77,10 +78,8 @@ export function newJob(startedAt: number, title: string): CleanViewChecklist {
     title: title.trim() !== "" ? fallbackTitle(title) : PLACEHOLDER_TITLE,
     phase: "working",
     startedAt,
-    tasks: [
-      makeTask(`${PLACEHOLDER_PREFIX}understand`, "Understand your request", "active"),
-      makeTask(`${PLACEHOLDER_PREFIX}plan`, "Plan the steps", "upcoming"),
-    ],
+    activity: { summary: "Thinking...", at: startedAt, inProgress: true },
+    tasks: [makeTask(`${PLACEHOLDER_PREFIX}thinking`, "Thinking...", "active")],
   };
 }
 

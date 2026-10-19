@@ -1,5 +1,11 @@
 export type CleanViewTaskStatus = "done" | "active" | "upcoming";
 
+export type CleanViewActivity = {
+  summary: string;
+  at: number;
+  inProgress: boolean;
+};
+
 export type CleanViewTask = {
   id: string;
   name: string;
@@ -14,6 +20,7 @@ export type CleanViewChecklist = {
   title: string;
   phase: CleanViewPhase;
   tasks: CleanViewTask[];
+  activity: CleanViewActivity | null;
   needsYouReason: string | null;
   stuckReason: string | null;
   activityHint?: string | null;
