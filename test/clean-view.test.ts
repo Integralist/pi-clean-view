@@ -324,8 +324,10 @@ describe("widget", () => {
 
     const lines = widget.render(80);
     // A blank line above the band keeps it clear of the spinner line.
-    expect(lines.length).toBe(6);
+    // and a blank line under the header row separates it from the task list.
+    expect(lines.length).toBe(7);
     expect(lines[0]).toBe("");
+    expect(lines[2]).toBe("");
     for (const line of lines) {
       expect(visibleWidth(line)).toBeLessThanOrEqual(80);
     }

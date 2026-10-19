@@ -117,7 +117,7 @@ export class CleanViewWidget implements Component {
         width,
       ),
     );
-    return ["", headerLine, ...rows];
+    return ["", headerLine, "", ...rows];
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
