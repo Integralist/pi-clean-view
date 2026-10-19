@@ -6,7 +6,7 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { duration, fit, isRunning, label, meter, METER_CELLS } from "./logic.ts";
+import { duration, fit, isRunning, label, meter, METER_CELLS, PAUSED_PHASES } from "./logic.ts";
 import type { CleanViewChecklist, CleanViewTask } from "./types.ts";
 
 const ANSI_GREEN = (text: string) => `\x1b[38;2;72;181;83m${text}\x1b[39m`;
@@ -108,7 +108,7 @@ export class CleanViewWidget implements Component {
     const firstUpcoming = list.tasks.findIndex((one) => one.status === "upcoming");
     const rows = list.tasks.map((one, i) =>
       truncateToWidth(
-        this.renderRow(one, i === firstUpcoming, list.phase === "needsYou" || list.phase === "ended", frame, nameWidth),
+        this.renderRow(one, i === firstUpcoming, PAUSED_PHASES.has(list.phase), frame, nameWidth),
         width,
       ),
     );
@@ -165,7 +165,7 @@ export class CleanViewWidget implements Component {
   ): string {
     const name = fit(one.name, width);
     const bar = meter(one, frame);
-    const tag = label(one, isFirstUpcoming);
+    const tag = label(one, isFirstUpcoming, isPaused);
     if (one.status === "done") {
       return `${ANSI_GREEN("✓")} ${ANSI_DIM(name)} ${ANSI_GREEN(bar)}  ${ANSI_DIM(tag)}`;
     }

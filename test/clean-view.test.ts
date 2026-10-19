@@ -478,6 +478,40 @@ describe("extension integration", () => {
     expect(h.renderWidget(100).join("\n")).toContain("■ Ended · Audit SQL migrations");
   });
 
+  test("Esc mid-plan reads Stopped with the step Paused; a report does not revive it; a typed prompt carries on", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    const typed = (prompt: string) => h.emit("before_agent_start", {
+      messageType: "user", prompt, systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await typed("Audit SQL migrations");
+    await h.callTool("plan_steps", { steps: ["Inventory SQL files", "Verify formatting"] });
+    await h.callTool("report_progress", { task: "Inventory SQL files", percent: 100 });
+    await h.emit("agent_settled", { aborted: true });
+
+    let rendered = h.renderWidget(100).join("\n");
+    expect(rendered).toContain("■ Stopped · Audit SQL migrations · you pressed Esc");
+    expect(rendered).toMatch(/‖ Verify formatting\s+[█░]{10}\s+Paused/);
+    expect(rendered).not.toContain("Working");
+
+    // A subagent reporting after Esc must not bring the stopped plan back
+    await h.emit("before_agent_start", {
+      messageType: "custom",
+      message: { customType: "subagent-complete", content: "done", display: true, details: { id: "sub-1" } },
+      systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    expect(h.renderWidget(100).join("\n")).toContain("■ Stopped");
+
+    // Re-steering carries on with the same plan
+    await typed("Use the staging database instead");
+    rendered = h.renderWidget(100).join("\n");
+    expect(rendered).toContain("Audit SQL migrations");
+    expect(rendered).toMatch(/✓ Inventory SQL files/);
+    expect(rendered).toMatch(/▶ Verify formatting\s+[█░]{10}\s+Working/);
+  });
+
   test("tracks Needs you on ui_prompt_start, Stuck on 3 errors, and All done + collapse on agent_settled", async () => {
     vi.useFakeTimers();
     try {

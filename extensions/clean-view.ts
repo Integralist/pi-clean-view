@@ -24,6 +24,7 @@ import {
   isRunning,
   isUserRejection,
   endsWithQuestion,
+  PAUSED_PHASES,
   newJob,
   PLACEHOLDER_TITLE,
   planSteps,
@@ -512,15 +513,16 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       event.systemPromptOptions.sections.clean_view = SECTION;
     }
     if (event.messageType === "user" && event.prompt.trim() !== "") {
-      const isPaused = checklist.phase === "needsYou" || checklist.phase === "waiting" || checklist.phase === "ended";
-      if (isPaused && hasPlan(checklist)) {
+      // A plan left part way (Esc, a pause, a question, subagents) carries on: a typed prompt is usually a re-steer.
+      if (PAUSED_PHASES.has(checklist.phase) && hasPlan(checklist)) {
         resumeJob();
       } else {
         startJob(event.prompt);
       }
-    } else if (event.messageType === "custom" && checklist.phase !== "idle" && checklist.phase !== "done") {
+    } else if (event.messageType === "custom") {
       subagentReported(event.message);
-      resumeJob();
+      // A report revives a live or paused plan, but never one the person stopped with Esc.
+      if (checklist.phase !== "idle" && checklist.phase !== "done" && checklist.phase !== "stopped") resumeJob();
     }
     return undefined;
   });
