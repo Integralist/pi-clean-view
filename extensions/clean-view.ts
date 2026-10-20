@@ -86,9 +86,10 @@ const SECTION = `# Clean View checklist
 
 The person sees a plain checklist of your plan instead of your tool calls.
 
-- For every request, even a quick question, call \`${PLAN_TOOL}\` first with a short job title and every step of the job (2 to 8 short names in order). If you use \`codemode\`, call \`await tools.${PLAN_TOOL}({ ... })\` before calling any other tool.
+- For every request, even a quick question, call \`${PLAN_TOOL}\` first with a short job title and every step of the job (1 to 8 short names in order). Only include steps that perform actual work; never add a filler final step like "Prepare next action" or "Summarize findings". If you use \`codemode\`, call \`await tools.${PLAN_TOOL}({ ... })\` before calling any other tool.
 - Call \`${PROGRESS_TOOL}\` after each item of a step (each file read, check run or section written), and at least every 3 tool calls, so the person never watches a percent sit still. Pass 100 the moment a step finishes.
-- Batch \`${PLAN_TOOL}\` and \`${PROGRESS_TOOL}\` in the same response as your next tool call (or inside the same \`codemode\` script) instead of spending a separate turn on them alone. When the final step is ready to answer, reply directly; Clean View completes the final step automatically.
+- Batch \`${PLAN_TOOL}\` and \`${PROGRESS_TOOL}\` in the same response as your next tool call (or inside the same \`codemode\` script) instead of spending a separate turn on them alone. Only pass 100 after you have read a step's tool output and confirmed the step is done; when the final step is ready to answer, reply directly and Clean View completes it automatically.
+- Keep internal reasoning before tool calls brief (1 to 2 sentences) so the checklist never sits idle on a long thinking pause.
 - If the job grows past your plan (extra checks, cleanup, undoing changes, a new kind of work), call \`${PLAN_TOOL}\` again with the full updated list before you do it. Keep finished step names the same so they stay checked off.
 - When a step spawns subagents, keep its progress below 100% until you have collected the subagent results (\`get_subagent_result\`).
 - If the person sends a mid-job message or status check while steps remain, answer briefly and include your next tool call in the same response so the job keeps moving.
@@ -462,7 +463,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       minItems: 1,
       maxItems: 8,
       description:
-        "2 to 8 short plain-English step names in order, each under 40 characters and starting with a verb.",
+        "1 to 8 short plain-English step names in order, each under 40 characters and starting with a verb.",
     }),
   });
 
@@ -481,7 +482,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     name: PLAN_TOOL,
     label: "Plan steps",
     description:
-      "Lay out every step of the job up front so the person sees the plan: 2 to 8 short plain-English step names in order, each under 40 characters and starting with a verb. The first step starts right away. If the job grows past the plan, call it again with the full updated list and keep finished step names unchanged.",
+      "Lay out every step of the job up front so the person sees the plan: 1 to 8 short plain-English step names in order, each under 40 characters and starting with a verb. The first step starts right away. If the job grows past the plan, call it again with the full updated list and keep finished step names unchanged.",
     promptSnippet: "Lay out the plain-English checklist steps for the current job",
     parameters: PlanStepsParams,
     async execute(toolCallId, params) {

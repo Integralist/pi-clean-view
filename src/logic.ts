@@ -274,9 +274,9 @@ export function label(one: CleanViewTask, isFirstUpcoming: boolean, isPaused = f
   return isFirstUpcoming ? "Next" : "Up next";
 }
 
-// The newest entries a step's raw log keeps, and the characters each entry keeps.
+// The newest entries a step's raw log keeps, and the characters each summary line keeps.
 export const LOG_ENTRIES = 200;
-export const LOG_ENTRY_CHARS = 4000;
+export const LOG_ENTRY_CHARS = 160;
 
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
@@ -284,9 +284,9 @@ const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u{10eeee}]/gu;
 
 function stripBrokenChars(text: string): string {
   return text
+    .slice(0, LOG_ENTRY_CHARS * 4)
     .replace(ANSI, "")
-    .replace(/\r/g, "")
-    .replace(/\t/g, "  ")
+    .replace(/[\r\n\t]+/g, " ")
     .replace(LONE_SURROGATE, "")
     .replace(CONTROL, "");
 }
