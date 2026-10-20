@@ -69,4 +69,44 @@ describe("TaskDetailsDialog", () => {
     dialog.handleInput("tui.select.confirm");
     expect(choices).toEqual([CLOSE]);
   });
+
+  test("renders step log on the right side newest-first and scrolls via wheel and page keys", () => {
+    const logs = Array.from({ length: 15 }, (_, i) => ({
+      kind: (i % 2 === 0 ? "call" : "result") as "call" | "result",
+      key: `k${i}`,
+      text: i % 2 === 0 ? `→ read {"path":"file-${i}.ts"}` : `← contents-${i}`,
+    }));
+    const second = details({
+      task: { id: "t2", name: "Run the checks", status: "upcoming", percent: 0, hasReported: false },
+      status: "Next",
+      logs: [],
+    });
+    const { dialog } = open([details({ logs }), second]);
+    const rendered = dialog.render(120).join("\n");
+    expect(rendered).toContain("Step log");
+    expect(rendered).toContain("← contents-13");
+    expect(rendered).toContain("→ read {\"path\":\"file-14.ts\"}");
+    expect(rendered.indexOf("file-14.ts")).toBeLessThan(rendered.indexOf("contents-13"));
+    expect(rendered).not.toContain("file-0.ts");
+
+    dialog.handleMouse?.({
+      type: "wheel",
+      button: "none",
+      x: 80,
+      y: 4,
+      screenX: 80,
+      screenY: 4,
+      width: 120,
+      height: 15,
+      shift: false,
+      alt: false,
+      ctrl: false,
+      wheelDelta: 10,
+    });
+    const scrolled = dialog.render(120).join("\n");
+    expect(scrolled).toContain("→ read {\"path\":\"file-0.ts\"}");
+
+    dialog.handleInput(RIGHT);
+    expect(dialog.render(120).join("\n")).toContain("Nothing recorded for this step yet");
+  });
 });

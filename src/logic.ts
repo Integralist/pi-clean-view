@@ -1,4 +1,4 @@
-import type { CleanViewChecklist, CleanViewTask, TodoItem } from "./types.ts";
+import type { CleanViewChecklist, CleanViewLogEntry, CleanViewTask, TodoItem } from "./types.ts";
 
 export const MAX_NAME = 40;
 export const METER_CELLS = 10;
@@ -274,8 +274,46 @@ export function label(one: CleanViewTask, isFirstUpcoming: boolean, isPaused = f
   return isFirstUpcoming ? "Next" : "Up next";
 }
 
+// The newest entries a step's raw log keeps, and the characters each entry keeps.
+export const LOG_ENTRIES = 200;
+export const LOG_ENTRY_CHARS = 4000;
+
+const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u{10eeee}]/gu;
+
+function stripBrokenChars(text: string): string {
+  return text
+    .replace(ANSI, "")
+    .replace(/\r/g, "")
+    .replace(/\t/g, "  ")
+    .replace(LONE_SURROGATE, "")
+    .replace(CONTROL, "");
+}
+
+function clip(text: string): string {
+  const clean = stripBrokenChars(text);
+  if (clean.length <= LOG_ENTRY_CHARS) return clean;
+  return `${clean.slice(0, LOG_ENTRY_CHARS).replace(LONE_SURROGATE, "")}…`;
+}
+
+/**
+ * Adds `text` to the last entry when it has the same `key` (a block streaming
+ * in pieces), else a new entry at the end; keeps the newest LOG_ENTRIES.
+ */
+export function appendLog(
+  log: readonly CleanViewLogEntry[],
+  kind: CleanViewLogEntry["kind"],
+  key: string,
+  text: string,
+): CleanViewLogEntry[] {
+  const last = log.at(-1);
+  if (last?.key === key) return [...log.slice(0, -1), { ...last, text: clip(last.text + text) }];
+  return [...log, { kind, key, text: clip(text) }].slice(-LOG_ENTRIES);
+}
+
 /** A name sized to the column: cut with "…" when it would wrap, padded otherwise. */
 export function fit(name: string, width: number): string {
   if (name.length <= width) return name.padEnd(width);
-  return `${name.slice(0, Math.max(0, width - 1))}…`;
+  return `${name.slice(0, Math.max(0, width - 1)).replace(LONE_SURROGATE, "")}…`;
 }

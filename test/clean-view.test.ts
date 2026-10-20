@@ -15,6 +15,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import cleanView from "../extensions/clean-view.ts";
 import {
   addTask,
+  appendLog,
   clampPercent,
   cleanName,
   duration,
@@ -27,6 +28,8 @@ import {
   isRunning,
   isUserRejection,
   label,
+  LOG_ENTRIES,
+  LOG_ENTRY_CHARS,
   meter,
   newJob,
   planSteps,
@@ -56,6 +59,7 @@ function createHarness(options: { directory?: string; now?: () => number; collap
   const hiddenThinkingLabels: Array<string | undefined> = [];
   let widgetFactory: ((tui: any, theme: any) => any) | undefined;
   let widgetComponent: any;
+  let customDialog: any;
   let renderRequests = 0;
 
   const tui = {
@@ -83,6 +87,11 @@ function createHarness(options: { directory?: string; now?: () => number; collap
       setWidget: (_key: string, factory: any) => {
         widgetFactory = factory;
         widgetComponent = typeof factory === "function" ? factory(tui, theme) : undefined;
+      },
+      custom: async (factory: any) => {
+        const keybindings = { matches: (data: string, id: string) => data === id };
+        customDialog = factory(tui, theme, keybindings, () => {});
+        return undefined;
       },
     } as any,
     sessionManager: {
@@ -195,6 +204,9 @@ function createHarness(options: { directory?: string; now?: () => number; collap
     hiddenThinkingLabels,
     get widgetComponent() {
       return widgetComponent;
+    },
+    get customDialog() {
+      return customDialog;
     },
     get widgetFactory() {
       return widgetFactory;
@@ -317,6 +329,24 @@ describe("logic", () => {
 
     expect(fit("Short", 8)).toBe("Short   ");
     expect(fit("VeryLongTaskName", 8)).toBe("VeryLon…");
+  });
+
+  test("appendLog joins consecutive pieces with the same key, caps length, and strips control codes", () => {
+    let log = appendLog([], "thinking", "b0", "Let me ");
+    log = appendLog(log, "thinking", "b0", "think.");
+    log = appendLog(log, "call", "b1", "\x1b[32mRead\x1b[0m ");
+    expect(log).toEqual([
+      { kind: "thinking", key: "b0", text: "Let me think." },
+      { kind: "call", key: "b1", text: "Read " },
+    ]);
+
+    for (let i = 0; i < LOG_ENTRIES + 5; i++) log = appendLog(log, "result", `r${i}`, "ok");
+    expect(log).toHaveLength(LOG_ENTRIES);
+    expect(log[0]?.key).toBe("r5");
+
+    const long = appendLog([], "result", "r", "x".repeat(LOG_ENTRY_CHARS + 50))[0]!.text;
+    expect(long).toHaveLength(LOG_ENTRY_CHARS + 1);
+    expect(long.endsWith("…")).toBe(true);
   });
 });
 
@@ -1095,5 +1125,35 @@ describe("extension integration", () => {
       messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit" }],
     });
     expect(h.renderWidget(100).join("\n")).toContain("⚠ Stuck: you hit your usage limit, try again a little later");
+  });
+
+  test("records main-loop tool calls and results per step for the task details dialog", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Check the config",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Read the config", "Report back"] });
+    await h.callTool("read", { path: "a.ts" });
+    await h.callTool("grep", { pattern: "port" }, "subagent-1");
+    await h.callTool("bash", { command: "git status" });
+
+    await h.commands.get("simple")!.handler("inspect", h.ctx);
+    expect(h.customDialog).toBeDefined();
+    const first = h.customDialog.render(120).join("\n");
+    expect(first).toContain("→ read {\"path\":\"a.ts\"}");
+    expect(first).toContain("→ bash {\"command\":\"git status\"}");
+    expect(first).toContain("← ok");
+    expect(first).not.toContain("grep");
+    expect(first.indexOf("bash {")).toBeLessThan(first.indexOf("read {"));
+
+    h.customDialog.handleInput("\x1b[C");
+    const second = h.customDialog.render(120).join("\n");
+    expect(second).toContain("Nothing recorded for this step yet");
   });
 });

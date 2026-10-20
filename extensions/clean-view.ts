@@ -15,6 +15,7 @@ type ToolRenderContext = Parameters<NonNullable<ToolRenderers["renderCall"]>>[2]
 import { Type } from "typebox";
 import {
   addTask,
+  appendLog,
   clampPercent,
   duration,
   EMPTY,
@@ -34,7 +35,7 @@ import {
   updateTask,
 } from "../src/logic.ts";
 import { STOP, TaskDetailsDialog } from "../src/inspector.ts";
-import type { CleanViewActivity, CleanViewChecklist, TodoItem } from "../src/types.ts";
+import type { CleanViewActivity, CleanViewChecklist, CleanViewLogEntry, TodoItem } from "../src/types.ts";
 import { CleanViewWidget } from "../src/widget.ts";
 
 export interface CleanViewOptions {
@@ -182,6 +183,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   // Files read during the active step, so the activity shows real progress the model hasn't reported.
   let readsInStep = 0;
   let readsStepId: string | null = null;
+  let logSeq = 0;
+  const taskLogs = new Map<string, CleanViewLogEntry[]>();
   let waitingOnSubagents = 0;
   // Subagents spawned and not yet reported back; each sends one subagent-complete message.
   const runningSubagents = new Set<string>();
@@ -287,11 +290,20 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
   }
 
+  function recordTaskLog(kind: CleanViewLogEntry["kind"], text: string): void {
+    const stepId = checklist.tasks.find((one) => one.status === "active")?.id;
+    if (!stepId) return;
+    const key = `${kind}-${++logSeq}`;
+    taskLogs.set(stepId, appendLog(taskLogs.get(stepId) ?? [], kind, key, text));
+    requestRender();
+  }
+
   function startJob(promptText: string): void {
     clearCollapseTimer();
     failures = 0;
     waitingOnSubagents = 0;
     lastAssistantText = "";
+    taskLogs.clear();
     const startedAt = now();
     const title = promptText.trim() !== "" ? fallbackTitle(promptText) : PLACEHOLDER_TITLE;
     edit(() => newJob(startedAt, title));
@@ -353,6 +365,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         elapsed,
         activity: lastActivity,
         canStop: isRunning(list),
+        logs: taskLogs.get(task.id) ?? [],
       }));
     };
     isOwnDialogPending = true;
@@ -720,6 +733,9 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     if (!INTERNAL_TOOLS.has(tool) && event.parentToolCallId === undefined) {
       edit((current) => ({ ...current, activity: activity(toolActivity(tool), true) }));
     }
+    if (!INTERNAL_TOOLS.has(tool) && !ALWAYS_ALLOWED.has(tool) && event.parentToolCallId === undefined) {
+      recordTaskLog("call", `→ ${tool} ${JSON.stringify(event.input ?? {})}`);
+    }
     backToWork();
     const input = event.input as Record<string, unknown>;
     if ((tool === "TodoWrite" || tool === "todo") && Array.isArray(input?.todos)) {
@@ -774,6 +790,10 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
           ? countRead()
           : toolActivity(event.toolName, true);
       edit((current) => ({ ...current, activity: activity(summary, false) }));
+    }
+    if (!INTERNAL_TOOLS.has(event.toolName) && !ALWAYS_ALLOWED.has(event.toolName) && event.parentToolCallId === undefined) {
+      const out = extractText(event.content);
+      recordTaskLog(event.isError ? "error" : "result", event.isError ? `← error: ${out}` : `← ${out}`);
     }
     const input = event.input as Record<string, unknown>;
     if (SPAWN_TOOLS.has(event.toolName) && !event.isError) {
