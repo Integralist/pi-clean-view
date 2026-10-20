@@ -51,7 +51,7 @@ const WIDGET_KEY = "clean-view";
 const SETTINGS_FILE = "pi-clean-view.json";
 const PLAN_TOOL = "plan_steps";
 const PROGRESS_TOOL = "report_progress";
-const DEFAULT_FRAME_MS = 250;
+const DEFAULT_FRAME_MS = 100;
 const DEFAULT_COLLAPSE_MS = 5000;
 const FAILURES_TO_STUCK = 3;
 // Tool calls the checklist may sit unchanged through before the next one is sent back.

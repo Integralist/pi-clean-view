@@ -671,6 +671,27 @@ describe("extension integration", () => {
     dialog.handleInput("tui.select.cancel");
   });
 
+  test("advances the spinner at a 100ms cadence", async () => {
+    vi.useFakeTimers();
+    try {
+      const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+      tempDirs.push(dir);
+      const h = createHarness({ directory: dir, now: () => 1000 });
+      await h.emit("session_start");
+      await h.emit("before_agent_start", {
+        messageType: "user", prompt: "Inspect the telemetry stack", systemPrompt: "", systemPromptOptions: { sections: {} },
+      });
+
+      const before = h.renderWidget(80).join("\n");
+      vi.advanceTimersByTime(100);
+      const after = h.renderWidget(80).join("\n");
+      expect(after).not.toBe(before);
+      await h.emit("agent_settled", { aborted: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("keeps showing the model at work after the last step is done", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);
