@@ -1156,4 +1156,158 @@ describe("extension integration", () => {
     const second = h.customDialog.render(120).join("\n");
     expect(second).toContain("Nothing recorded for this step yet");
   });
+
+  test("batches plan_steps and report_progress with sibling tools in the same turn and guides replans", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Build pricing page",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+
+    // Parallel tool_call events in one assistant turn: plan_steps followed by read before execute() runs
+    const planGate = await h.emit("tool_call", {
+      toolCallId: "plan-1",
+      toolName: "plan_steps",
+      input: { title: "Build pricing page", steps: ["Read brand notes", "Build pricing section"] },
+    });
+    expect(planGate?.block).toBeFalsy();
+    const siblingReadGate = await h.emit("tool_call", {
+      toolCallId: "read-1",
+      toolName: "read",
+      input: { path: "notes.md" },
+    });
+    expect(siblingReadGate?.block).toBeFalsy();
+    const firstPlanResult = await h.tools.get("plan_steps")!.execute(
+      "plan-1",
+      { title: "Build pricing page", steps: ["Read brand notes", "Build pricing section"] },
+      undefined,
+      undefined,
+      h.ctx as any,
+    );
+    expect((firstPlanResult.content[0] as { text?: string })?.text).toBe(
+      "Planned 2 steps. The first one has started.",
+    );
+    await h.emit("tool_result", {
+      toolCallId: "read-1",
+      toolName: "read",
+      input: { path: "notes.md" },
+      content: [{ type: "text", text: "notes" }],
+      isError: false,
+    });
+
+    // Parallel tool_call events: report_progress(100) + bash in the same turn logs bash under step 2
+    await h.emit("tool_call", {
+      toolCallId: "prog-1",
+      toolName: "report_progress",
+      input: { task: "Read brand notes", percent: 100 },
+    });
+    await h.emit("tool_call", {
+      toolCallId: "bash-1",
+      toolName: "bash",
+      input: { command: "npm test" },
+    });
+    await h.tools.get("report_progress")!.execute(
+      "prog-1",
+      { task: "Read brand notes", percent: 100 },
+      undefined,
+      undefined,
+      h.ctx as any,
+    );
+    await h.emit("tool_result", {
+      toolCallId: "bash-1",
+      toolName: "bash",
+      input: { command: "npm test" },
+      content: [{ type: "text", text: "passed" }],
+      isError: false,
+    });
+
+    await h.commands.get("simple")!.handler("inspect", h.ctx);
+    expect(h.customDialog.render(120).join("\n")).toContain("→ bash {\"command\":\"npm test\"}");
+
+    // Replanning with finished steps tells the model which step is active so it does not re-report done steps
+    const replanned = await h.callTool("plan_steps", {
+      title: "Build pricing page",
+      steps: ["Read brand notes", "Build pricing section", "Verify output"],
+    });
+    expect(replanned.result.content[0].text).toBe(
+      'Planned 3 steps (1 already done). Active step: "Build pricing section" — do not re-report finished steps.',
+    );
+  });
+
+  test("tracks codemode nested calls, excludes paused idle time, clears collected subagents, and auto-completes the final step", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    let clock = 1000;
+    const h = createHarness({ directory: dir, now: () => clock });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Audit config",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { title: "Audit config", steps: ["Read config", "Summarize findings"] });
+
+    // After 8 quiet calls, a codemode script containing report_progress is allowed and resets quietCalls
+    for (let i = 0; i < 8; i++) {
+      expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
+    }
+    const cmGate = await h.emit("tool_call", {
+      toolCallId: "cm-1",
+      toolName: "codemode",
+      input: { code: "await tools.read({ path: 'cfg.json' }); await tools.report_progress({ task: 'Read config', percent: 50 });" },
+    });
+    expect(cmGate?.block).toBeFalsy();
+    await h.callTool("read", { path: "cfg.json" }, "cm-1");
+    expect(h.renderWidget(120).join("\n")).toContain("Read 1 file in this step");
+    await h.emit("tool_result", {
+      toolCallId: "cm-1",
+      toolName: "codemode",
+      input: {},
+      content: [{ type: "text", text: "done" }],
+      isError: false,
+    });
+
+    // Pause at t=5000 (4s elapsed), resume after 60s of user idle time at t=65000 -> timer still shows 4s, not 1m 4s
+    clock = 5000;
+    await h.emit("agent_end", {
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Paused mid-plan." }] }],
+    });
+    await h.emit("agent_settled", { aborted: false });
+    clock = 65000;
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "continue",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    expect(h.renderWidget(100).join("\n")).toContain("Audit config · 4s");
+
+    // Spawn a subagent and collect it via get_subagent_result without a custom message
+    await h.emit("tool_result", {
+      toolCallId: "spawn-1",
+      toolName: "spawn_inline_subagent",
+      input: {},
+      content: [{ type: "text", text: "started" }],
+      details: { id: "sub-direct", status: "running" },
+      isError: false,
+    });
+    await h.callTool("get_subagent_result", { id: "sub-direct" });
+
+    // Advance to the final step; settling on a normal reply auto-completes the final step to All done
+    await h.callTool("report_progress", { task: "Read config", percent: 100 });
+    clock = 68000;
+    await h.emit("agent_end", {
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "All checks passed." }] }],
+    });
+    await h.emit("agent_settled", { aborted: false });
+    const finalRender = h.renderWidget(100).join("\n");
+    expect(finalRender).toContain("✓ All done · Audit config · took 7s");
+    expect(finalRender).toMatch(/✓ Summarize findings\s+█{10}\s+Done/);
+  });
 });

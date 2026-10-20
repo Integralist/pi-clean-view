@@ -88,6 +88,7 @@ The person sees a plain checklist of your plan instead of your tool calls.
 
 - For every request, even a quick question, call \`${PLAN_TOOL}\` first with a short job title and every step of the job (2 to 8 short names in order). If you use \`codemode\`, call \`await tools.${PLAN_TOOL}({ ... })\` before calling any other tool.
 - Call \`${PROGRESS_TOOL}\` after each item of a step (each file read, check run or section written), and at least every 3 tool calls, so the person never watches a percent sit still. Pass 100 the moment a step finishes.
+- Batch \`${PLAN_TOOL}\` and \`${PROGRESS_TOOL}\` in the same response as your next tool call (or inside the same \`codemode\` script) instead of spending a separate turn on them alone. When the final step is ready to answer, reply directly; Clean View completes the final step automatically.
 - If the job grows past your plan (extra checks, cleanup, undoing changes, a new kind of work), call \`${PLAN_TOOL}\` again with the full updated list before you do it. Keep finished step names the same so they stay checked off.
 - When a step spawns subagents, keep its progress below 100% until you have collected the subagent results (\`get_subagent_result\`).
 - If the person sends a mid-job message or status check while steps remain, answer briefly and include your next tool call in the same response so the job keeps moving.
@@ -188,6 +189,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   let waitingOnSubagents = 0;
   // Subagents spawned and not yet reported back; each sends one subagent-complete message.
   const runningSubagents = new Set<string>();
+  const codemodeCallIds = new Set<string>();
+  const appliedToolCallIds = new Set<string>();
   let lastAssistantText = "";
   let inputThinking = false;
   let ticker: ReturnType<typeof setInterval> | undefined;
@@ -304,6 +307,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     waitingOnSubagents = 0;
     lastAssistantText = "";
     taskLogs.clear();
+    codemodeCallIds.clear();
+    appliedToolCallIds.clear();
     const startedAt = now();
     const title = promptText.trim() !== "" ? fallbackTitle(promptText) : PLACEHOLDER_TITLE;
     edit(() => newJob(startedAt, title));
@@ -314,10 +319,12 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     clearCollapseTimer();
     failures = 0;
     lastAssistantText = "";
+    const resumedAt = now();
     edit((list) => ({
       ...list,
       phase: "working",
-      activity: activity("Resumed the task list", true),
+      startedAt: list.finishedAt !== null ? list.startedAt + Math.max(0, resumedAt - list.finishedAt) : list.startedAt,
+      activity: activity("Resumed the task list", true, resumedAt),
       needsYouReason: null,
       stuckReason: null,
       activityHint: waitingOnSubagents > 0 ? SUBAGENT_WAIT_HINT : null,
@@ -477,16 +484,24 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       "Lay out every step of the job up front so the person sees the plan: 2 to 8 short plain-English step names in order, each under 40 characters and starting with a verb. The first step starts right away. If the job grows past the plan, call it again with the full updated list and keep finished step names unchanged.",
     promptSnippet: "Lay out the plain-English checklist steps for the current job",
     parameters: PlanStepsParams,
-    async execute(_toolCallId, params) {
+    async execute(toolCallId, params) {
       const names = Array.isArray(params.steps)
         ? params.steps.filter((s): s is string => typeof s === "string")
         : [];
       const title = typeof params.title === "string" ? params.title : undefined;
       ensureJob();
-      edit((list) => ({ ...planSteps(list, names, title), activity: activity("Plan updated", false) }));
+      if (!appliedToolCallIds.delete(toolCallId)) {
+        edit((list) => ({ ...planSteps(list, names, title), activity: activity("Plan updated", false) }));
+      }
       setInputThinking(false);
+      const doneCount = checklist.tasks.filter((t) => t.status === "done").length;
+      const activeTask = checklist.tasks.find((t) => t.status === "active");
+      const summary =
+        doneCount > 0 && activeTask
+          ? `Planned ${checklist.tasks.length} steps (${doneCount} already done). Active step: "${activeTask.name}" — do not re-report finished steps.`
+          : `Planned ${checklist.tasks.length} steps. The first one has started.`;
       return {
-        content: [{ type: "text", text: `Planned ${checklist.tasks.length} steps. The first one has started.` }],
+        content: [{ type: "text", text: summary }],
         details: { steps: checklist.tasks.map((t) => t.name), title: checklist.title },
       };
     },
@@ -499,11 +514,13 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       "Report progress on the current step by its plain-English name, with a percent from 0 to 100. Report 100 the moment a step finishes; the next one then starts.",
     promptSnippet: "Report progress (0-100%) on the active checklist step",
     parameters: ReportProgressParams,
-    async execute(_toolCallId, params) {
+    async execute(toolCallId, params) {
       const name = typeof params.task === "string" ? params.task : "";
       const percent = typeof params.percent === "number" ? params.percent : Number(params.percent);
       ensureJob();
-      edit((list) => ({ ...reportProgress(list, name, percent), activity: activity("Progress reported", false) }));
+      if (!appliedToolCallIds.delete(toolCallId)) {
+        edit((list) => ({ ...reportProgress(list, name, percent), activity: activity("Progress reported", false) }));
+      }
       setInputThinking(false);
       return {
         content: [{ type: "text", text: `Progress noted: ${clampPercent(percent)}%.` }],
@@ -696,11 +713,14 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
 
   pi.on("tool_call", (event) => {
     const tool = event.toolName;
-    const isCodemodeWithPlan =
+    const code =
       tool === "codemode" &&
       event.parentToolCallId === undefined &&
-      typeof (event.input as { code?: unknown })?.code === "string" &&
-      String((event.input as { code: string }).code).includes(PLAN_TOOL);
+      typeof (event.input as { code?: unknown })?.code === "string"
+        ? String((event.input as { code: string }).code)
+        : "";
+    const isCodemodeWithPlan = code.includes(PLAN_TOOL);
+    const isCodemodeWithUpdater = isCodemodeWithPlan || code.includes(PROGRESS_TOOL);
 
     if (enabled && isRunning(checklist) && !hasPlan(checklist) && !ALWAYS_ALLOWED.has(tool) && !isCodemodeWithPlan) {
       return {
@@ -710,7 +730,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
 
     // Work the checklist doesn't show: after QUIET_CALLS calls with no plan or progress update, send one back.
-    if (PLAN_UPDATERS.has(tool)) {
+    if (PLAN_UPDATERS.has(tool) || isCodemodeWithUpdater) {
       quietCalls = 0;
     } else if (
       enabled &&
@@ -727,17 +747,35 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       };
     }
 
+    const input = event.input as Record<string, unknown>;
+    if (tool === PLAN_TOOL && Array.isArray(input?.steps)) {
+      const names = input.steps.filter((s): s is string => typeof s === "string");
+      const title = typeof input.title === "string" ? input.title : undefined;
+      ensureJob();
+      edit((list) => ({ ...planSteps(list, names, title), activity: activity("Plan updated", false) }));
+      appliedToolCallIds.add(event.toolCallId);
+      setInputThinking(false);
+    } else if (tool === PROGRESS_TOOL && typeof input?.task === "string") {
+      const percent = typeof input.percent === "number" ? input.percent : Number(input.percent);
+      ensureJob();
+      edit((list) => ({ ...reportProgress(list, input.task as string, percent), activity: activity("Progress reported", false) }));
+      appliedToolCallIds.add(event.toolCallId);
+      setInputThinking(false);
+    }
+    if (tool === "codemode" && event.parentToolCallId === undefined) {
+      codemodeCallIds.add(event.toolCallId);
+    }
+    const isTrackedCall = event.parentToolCallId === undefined || codemodeCallIds.has(event.parentToolCallId);
     if (!ALWAYS_ALLOWED.has(tool) && !PLAN_UPDATERS.has(tool) && !isCodemodeWithPlan) {
       setInputThinking(false);
     }
-    if (!INTERNAL_TOOLS.has(tool) && event.parentToolCallId === undefined) {
+    if (!INTERNAL_TOOLS.has(tool) && isTrackedCall) {
       edit((current) => ({ ...current, activity: activity(toolActivity(tool), true) }));
     }
-    if (!INTERNAL_TOOLS.has(tool) && !ALWAYS_ALLOWED.has(tool) && event.parentToolCallId === undefined) {
+    if (!INTERNAL_TOOLS.has(tool) && !ALWAYS_ALLOWED.has(tool) && isTrackedCall) {
       recordTaskLog("call", `→ ${tool} ${JSON.stringify(event.input ?? {})}`);
     }
     backToWork();
-    const input = event.input as Record<string, unknown>;
     if ((tool === "TodoWrite" || tool === "todo") && Array.isArray(input?.todos)) {
       ensureJob();
       edit((current) => fromTodos(current, input.todos as TodoItem[]));
@@ -776,14 +814,21 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   }
 
   pi.on("tool_result", (event) => {
+    codemodeCallIds.delete(event.toolCallId);
+    appliedToolCallIds.delete(event.toolCallId);
+    const isTrackedCall = event.parentToolCallId === undefined || codemodeCallIds.has(event.parentToolCallId);
+    const input = event.input as Record<string, unknown>;
     if (event.toolName === "get_subagent_result") {
       waitingOnSubagents = Math.max(0, waitingOnSubagents - 1);
       if (waitingOnSubagents === 0) {
         edit((current) => ({ ...current, activityHint: null }));
       }
     }
+    if ((event.toolName === "get_subagent_result" || event.toolName === "stop_subagent") && !event.isError && typeof input?.id === "string") {
+      runningSubagents.delete(input.id);
+    }
     backToWork();
-    if (!INTERNAL_TOOLS.has(event.toolName) && event.parentToolCallId === undefined) {
+    if (!INTERNAL_TOOLS.has(event.toolName) && isTrackedCall) {
       const summary = event.isError
         ? "A tool call failed"
         : event.toolName.toLowerCase() === "read"
@@ -791,11 +836,10 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
           : toolActivity(event.toolName, true);
       edit((current) => ({ ...current, activity: activity(summary, false) }));
     }
-    if (!INTERNAL_TOOLS.has(event.toolName) && !ALWAYS_ALLOWED.has(event.toolName) && event.parentToolCallId === undefined) {
+    if (!INTERNAL_TOOLS.has(event.toolName) && !ALWAYS_ALLOWED.has(event.toolName) && isTrackedCall) {
       const out = extractText(event.content);
       recordTaskLog(event.isError ? "error" : "result", event.isError ? `← error: ${out}` : `← ${out}`);
     }
-    const input = event.input as Record<string, unknown>;
     if (SPAWN_TOOLS.has(event.toolName) && !event.isError) {
       const spawned = event.details as { id?: unknown; status?: unknown } | undefined;
       if (typeof spawned?.id === "string" && spawned.id !== "" && !SUBAGENT_DONE.has(String(spawned.status))) {
@@ -864,6 +908,15 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         }
         if (runningSubagents.size > 0) {
           return { ...list, phase: "waiting", needsYouReason: null, activityHint: null, waitingOn: runningSubagents.size };
+        }
+        if (hasPlan(list) && !list.tasks.some((one) => one.status === "upcoming")) {
+          return {
+            ...list,
+            phase: "done",
+            tasks: list.tasks.map((one) => ({ ...one, status: "done", percent: 100 })),
+            needsYouReason: null,
+            activityHint: null,
+          };
         }
         return { ...list, phase: "ended", needsYouReason: null, activityHint: null };
       }
