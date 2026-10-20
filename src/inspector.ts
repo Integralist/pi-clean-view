@@ -88,7 +88,7 @@ export class TaskDetailsDialog implements Component {
       lines.length > innerRows
         ? t.fg("dim", `  ${offset + 1}-${offset + visible.length} of ${lines.length} (scroll to view)`)
         : "";
-    const header = truncateToWidth(`${t.bold("Step log")}${headerSuffix}`, boxWidth);
+    const header = truncateToWidth(`${t.bold("Step log · newest first")}${headerSuffix}`, boxWidth);
     const borderH = "─".repeat(Math.max(0, boxWidth - 2));
     const top = t.fg("dim", `╭${borderH}╮`);
     const bottom = t.fg("dim", `╰${borderH}╯`);

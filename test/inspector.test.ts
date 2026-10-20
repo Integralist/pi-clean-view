@@ -84,6 +84,7 @@ describe("TaskDetailsDialog", () => {
     const { dialog } = open([details({ logs }), second]);
     const rendered = dialog.render(120).join("\n");
     expect(rendered).toContain("Step log");
+    expect(rendered).toContain("newest first");
     expect(rendered).toContain("← contents-13");
     expect(rendered).toContain("→ read {\"path\":\"file-14.ts\"}");
     expect(rendered.indexOf("file-14.ts")).toBeLessThan(rendered.indexOf("contents-13"));
