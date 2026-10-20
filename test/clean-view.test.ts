@@ -1128,10 +1128,11 @@ describe("extension integration", () => {
     expect(h.renderWidget(100).join("\n")).toContain("⚠ Stuck: you hit your usage limit, try again a little later");
   });
 
-  test("records main-loop tool calls and results per step for the task details dialog", async () => {
+  test("records main-loop tool calls, results, and per-task elapsed time for the task details dialog", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);
-    const h = createHarness({ directory: dir, now: () => 1000 });
+    let clock = 1000;
+    const h = createHarness({ directory: dir, now: () => clock });
     await h.emit("session_start");
     await h.emit("before_agent_start", {
       messageType: "user",
@@ -1139,23 +1140,40 @@ describe("extension integration", () => {
       systemPrompt: "",
       systemPromptOptions: { sections: {} },
     });
-    await h.callTool("plan_steps", { steps: ["Read the config", "Report back"] });
+    clock = 2000;
+    await h.callTool("plan_steps", { steps: ["Read the config", "Verify the settings", "Report back"] });
     await h.callTool("read", { path: "a.ts" });
     await h.callTool("grep", { pattern: "port" }, "subagent-1");
     await h.callTool("bash", { command: "git status" });
 
+    // Step 1 finishes at t=7000 (took 5s); Step 2 starts at t=7000 and is inspected at t=11000 (4s elapsed; overall run is 10s)
+    clock = 7000;
+    await h.callTool("report_progress", { task: "Read the config", percent: 100 });
+    clock = 11000;
+
     await h.commands.get("simple")!.handler("inspect", h.ctx);
     expect(h.customDialog).toBeDefined();
+    // Opens on the active task (step 2/3): elapsed is 4s (not 10s from the overall run)
+    const activePage = h.customDialog.render(120).join("\n");
+    expect(activePage).toContain("Verify the settings  2/3");
+    expect(activePage).toMatch(/Elapsed\s+4s/);
+
+    // Left to finished step 1/3: elapsed is frozen at 5s
+    h.customDialog.handleInput("\x1b[D");
     const first = h.customDialog.render(120).join("\n");
+    expect(first).toMatch(/Elapsed\s+5s/);
     expect(first).toContain("→ read {\"path\":\"a.ts\"}");
     expect(first).toContain("→ bash {\"command\":\"git status\"}");
     expect(first).toContain("← ok");
     expect(first).not.toContain("grep");
     expect(first.indexOf("bash {")).toBeLessThan(first.indexOf("read {"));
 
+    // Right twice to upcoming step 3/3: elapsed shows Not started yet
     h.customDialog.handleInput("\x1b[C");
-    const second = h.customDialog.render(120).join("\n");
-    expect(second).toContain("Nothing recorded for this step yet");
+    h.customDialog.handleInput("\x1b[C");
+    const third = h.customDialog.render(120).join("\n");
+    expect(third).toMatch(/Elapsed\s+Not started yet/);
+    expect(third).toContain("Nothing recorded for this step yet");
   });
 
   test("batches plan_steps and report_progress with sibling tools in the same turn and guides replans", async () => {

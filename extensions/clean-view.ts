@@ -32,6 +32,7 @@ import {
   PLACEHOLDER_TITLE,
   planSteps,
   reportProgress,
+  taskElapsed,
   updateTask,
 } from "../src/logic.ts";
 import { STOP, TaskDetailsDialog } from "../src/inspector.ts";
@@ -321,17 +322,25 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     failures = 0;
     lastAssistantText = "";
     const resumedAt = now();
-    edit((list) => ({
-      ...list,
-      phase: "working",
-      startedAt: list.finishedAt !== null ? list.startedAt + Math.max(0, resumedAt - list.finishedAt) : list.startedAt,
-      activity: activity("Resumed the task list", true, resumedAt),
-      needsYouReason: null,
-      stuckReason: null,
-      activityHint: waitingOnSubagents > 0 ? SUBAGENT_WAIT_HINT : null,
-      finishedAt: null,
-      waitingOn: undefined,
-    }));
+    edit((list) => {
+      const pauseMs = list.finishedAt !== null ? Math.max(0, resumedAt - list.finishedAt) : 0;
+      return {
+        ...list,
+        phase: "working",
+        startedAt: list.startedAt + pauseMs,
+        tasks: list.tasks.map((one) =>
+          one.status === "active" && one.startedAt !== undefined
+            ? { ...one, startedAt: one.startedAt + pauseMs }
+            : one,
+        ),
+        activity: activity("Resumed the task list", true, resumedAt),
+        needsYouReason: null,
+        stuckReason: null,
+        activityHint: waitingOnSubagents > 0 ? SUBAGENT_WAIT_HINT : null,
+        finishedAt: null,
+        waitingOn: undefined,
+      };
+    });
     startTicker();
   }
 
@@ -361,7 +370,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       const upcoming = list.tasks.findIndex((one) => one.status === "upcoming");
       const isPaused = PAUSED_PHASES.has(list.phase);
       const currentTime = now();
-      const elapsed = duration((list.finishedAt ?? currentTime) - list.startedAt);
+      const endTime = list.finishedAt ?? currentTime;
       const lastActivity = list.activity
         ? `${list.activity.summary} · ${list.activity.inProgress ? `for ${duration(currentTime - list.activity.at)}` : `${duration(currentTime - list.activity.at)} ago`}`
         : "No visible activity recorded yet";
@@ -370,7 +379,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         isPaused,
         status: label(task, index === upcoming, isPaused),
         progress: task.status === "done" ? "Complete" : task.hasReported ? `${task.percent}% reported` : "No percentage reported yet",
-        elapsed,
+        elapsed: taskElapsed(task, endTime),
         activity: lastActivity,
         canStop: isRunning(list),
         logs: taskLogs.get(task.id) ?? [],
@@ -492,7 +501,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       const title = typeof params.title === "string" ? params.title : undefined;
       ensureJob();
       if (!appliedToolCallIds.delete(toolCallId)) {
-        edit((list) => ({ ...planSteps(list, names, title), activity: activity("Plan updated", false) }));
+        const at = now();
+        edit((list) => ({ ...planSteps(list, names, title, at), activity: activity("Plan updated", false, at) }));
       }
       setInputThinking(false);
       const doneCount = checklist.tasks.filter((t) => t.status === "done").length;
@@ -520,7 +530,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       const percent = typeof params.percent === "number" ? params.percent : Number(params.percent);
       ensureJob();
       if (!appliedToolCallIds.delete(toolCallId)) {
-        edit((list) => ({ ...reportProgress(list, name, percent), activity: activity("Progress reported", false) }));
+        const at = now();
+        edit((list) => ({ ...reportProgress(list, name, percent, at), activity: activity("Progress reported", false, at) }));
       }
       setInputThinking(false);
       return {
@@ -734,13 +745,15 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       const names = input.steps.filter((s): s is string => typeof s === "string");
       const title = typeof input.title === "string" ? input.title : undefined;
       ensureJob();
-      edit((list) => ({ ...planSteps(list, names, title), activity: activity("Plan updated", false) }));
+      const at = now();
+      edit((list) => ({ ...planSteps(list, names, title, at), activity: activity("Plan updated", false, at) }));
       appliedToolCallIds.add(event.toolCallId);
       setInputThinking(false);
     } else if (tool === PROGRESS_TOOL && typeof input?.task === "string") {
       const percent = typeof input.percent === "number" ? input.percent : Number(input.percent);
       ensureJob();
-      edit((list) => ({ ...reportProgress(list, input.task as string, percent), activity: activity("Progress reported", false) }));
+      const at = now();
+      edit((list) => ({ ...reportProgress(list, input.task as string, percent, at), activity: activity("Progress reported", false, at) }));
       appliedToolCallIds.add(event.toolCallId);
       setInputThinking(false);
     }
@@ -760,16 +773,19 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     backToWork();
     if ((tool === "TodoWrite" || tool === "todo") && Array.isArray(input?.todos)) {
       ensureJob();
-      edit((current) => fromTodos(current, input.todos as TodoItem[]));
+      const at = now();
+      edit((current) => fromTodos(current, input.todos as TodoItem[], at));
       setInputThinking(false);
     }
     if (tool === "TaskUpdate" && typeof input?.taskId === "string") {
+      const at = now();
       edit((current) =>
         updateTask(
           current,
           input.taskId as string,
           input.status as "pending" | "in_progress" | "completed" | "deleted" | undefined,
           typeof input.subject === "string" ? input.subject : undefined,
+          at,
         ),
       );
       setInputThinking(false);
@@ -834,7 +850,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       const subject = details?.task?.subject ?? (typeof input?.subject === "string" ? input.subject : undefined);
       if (id && subject) {
         ensureJob();
-        edit((current) => ({ ...addTask(current, id, subject), activity: activity("Task list updated", false) }));
+        const at = now();
+        edit((current) => ({ ...addTask(current, id, subject, at), activity: activity("Task list updated", false, at) }));
         setInputThinking(false);
       }
     }
@@ -892,10 +909,17 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
           return { ...list, phase: "waiting", needsYouReason: null, activityHint: null, waitingOn: runningSubagents.size };
         }
         if (hasPlan(list) && !list.tasks.some((one) => one.status === "upcoming")) {
+          const finishedAt = list.finishedAt ?? now();
           return {
             ...list,
             phase: "done",
-            tasks: list.tasks.map((one) => ({ ...one, status: "done", percent: 100 })),
+            tasks: list.tasks.map((one) => ({
+              ...one,
+              status: "done",
+              percent: 100,
+              startedAt: one.startedAt ?? finishedAt,
+              finishedAt: one.finishedAt ?? finishedAt,
+            })),
             needsYouReason: null,
             activityHint: null,
           };

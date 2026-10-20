@@ -68,8 +68,16 @@ export function hasPlan(list: CleanViewChecklist): boolean {
   return list.tasks.length > 0 && list.tasks.every((task) => !task.id.startsWith(PLACEHOLDER_PREFIX));
 }
 
-function makeTask(id: string, name: string, status: CleanViewTask["status"]): CleanViewTask {
-  return { id, name, status, percent: status === "done" ? 100 : 0, hasReported: false };
+function makeTask(id: string, name: string, status: CleanViewTask["status"], at?: number): CleanViewTask {
+  return {
+    id,
+    name,
+    status,
+    percent: status === "done" ? 100 : 0,
+    hasReported: false,
+    ...(status !== "upcoming" && at !== undefined ? { startedAt: at } : {}),
+    ...(status === "done" && at !== undefined ? { finishedAt: at } : {}),
+  };
 }
 
 export function newJob(startedAt: number, title: string): CleanViewChecklist {
@@ -79,7 +87,7 @@ export function newJob(startedAt: number, title: string): CleanViewChecklist {
     phase: "working",
     startedAt,
     activity: { summary: "Thinking...", at: startedAt, inProgress: true },
-    tasks: [makeTask(`${PLACEHOLDER_PREFIX}thinking`, "Thinking...", "active")],
+    tasks: [makeTask(`${PLACEHOLDER_PREFIX}thinking`, "Thinking...", "active", startedAt)],
   };
 }
 
@@ -88,14 +96,30 @@ export function planSteps(
   list: CleanViewChecklist,
   steps: readonly string[],
   title?: string,
+  at = list.startedAt,
 ): CleanViewChecklist {
-  const done = new Set(list.tasks.filter((one) => one.status === "done").map((one) => one.name.toLowerCase()));
+  const kept = new Map(list.tasks.map((one) => [one.name.toLowerCase(), one]));
   const names = steps.map(cleanName).slice(0, 8);
-  let tasks = (names.length > 0 ? names : [FALLBACK_NAME]).map((name, i) =>
-    makeTask(`step-${i}-${name}`, name, done.has(name.toLowerCase()) ? "done" : "upcoming"),
-  );
+  let tasks = (names.length > 0 ? names : [FALLBACK_NAME]).map((name, i): CleanViewTask => {
+    const before = kept.get(name.toLowerCase());
+    if (before?.status === "done") {
+      return {
+        ...makeTask(`step-${i}-${name}`, name, "done", at),
+        startedAt: before.startedAt ?? at,
+        finishedAt: before.finishedAt ?? at,
+      };
+    }
+    return {
+      ...makeTask(`step-${i}-${name}`, name, "upcoming"),
+      ...(before?.startedAt !== undefined ? { startedAt: before.startedAt } : {}),
+    };
+  });
   const first = tasks.findIndex((one) => one.status !== "done");
-  if (first !== -1) tasks = tasks.map((one, i) => (i === first ? { ...one, status: "active" } : one));
+  if (first !== -1) {
+    tasks = tasks.map((one, i) =>
+      i === first ? { ...one, status: "active", startedAt: one.startedAt ?? at } : one,
+    );
+  }
   const nextTitle = title !== undefined && title.trim() !== "" ? fallbackTitle(title) : list.title;
   return { ...list, title: nextTitle, tasks };
 }
@@ -110,11 +134,29 @@ function activate(
   index: number,
   percent: number,
   hasReported: boolean,
+  at: number,
 ): CleanViewTask[] {
   return tasks.map((one, i) => {
-    if (i < index) return { ...one, status: "done", percent: 100 };
-    if (i === index) return { ...one, status: "active", percent, hasReported };
-    return one.status === "active" ? { ...one, status: "upcoming" } : one;
+    if (i < index) {
+      return {
+        ...one,
+        status: "done",
+        percent: 100,
+        startedAt: one.startedAt ?? at,
+        finishedAt: one.finishedAt ?? at,
+      };
+    }
+    if (i === index) {
+      return {
+        ...one,
+        status: "active",
+        percent,
+        hasReported,
+        startedAt: one.startedAt ?? at,
+        finishedAt: undefined,
+      };
+    }
+    return one.status === "active" ? { ...one, status: "upcoming", finishedAt: undefined } : one;
   });
 }
 
@@ -123,6 +165,7 @@ export function reportProgress(
   list: CleanViewChecklist,
   name: string,
   percent: number,
+  at = list.startedAt,
 ): CleanViewChecklist {
   const clean = cleanName(name);
   const p = clampPercent(percent);
@@ -137,22 +180,36 @@ export function reportProgress(
       ...tasks.slice(index),
     ];
   }
-  tasks = activate(tasks, index, p, true);
+  tasks = activate(tasks, index, p, true, at);
   if (p >= 100) {
-    tasks = tasks.map((one, i) => (i === index ? { ...one, status: "done", percent: 100 } : one));
+    tasks = tasks.map((one, i) =>
+      i === index
+        ? { ...one, status: "done", percent: 100, startedAt: one.startedAt ?? at, finishedAt: one.finishedAt ?? at }
+        : one,
+    );
     const next = tasks.findIndex((one, i) => i > index && one.status !== "done");
-    if (next !== -1) tasks = activate(tasks, next, 0, false);
+    if (next !== -1) tasks = activate(tasks, next, 0, false, at);
   }
   return { ...list, tasks };
 }
 
 /** A to-do list as the plan: completed rows done, the in-progress one active. */
-export function fromTodos(list: CleanViewChecklist, todos: readonly TodoItem[]): CleanViewChecklist {
+export function fromTodos(
+  list: CleanViewChecklist,
+  todos: readonly TodoItem[],
+  at = list.startedAt,
+): CleanViewChecklist {
   const kept = new Map(list.tasks.map((one) => [one.name.toLowerCase(), one]));
   let tasks = todos.map((todo, i): CleanViewTask => {
     const name = cleanName(todo.content);
     const before = kept.get(name.toLowerCase());
-    if (todo.status === "completed") return { ...makeTask(`todo-${i}-${name}`, name, "done") };
+    if (todo.status === "completed") {
+      return {
+        ...makeTask(`todo-${i}-${name}`, name, "done", at),
+        startedAt: before?.startedAt ?? at,
+        finishedAt: before?.finishedAt ?? at,
+      };
+    }
     if (todo.status === "in_progress") {
       return {
         id: `todo-${i}-${name}`,
@@ -160,6 +217,7 @@ export function fromTodos(list: CleanViewChecklist, todos: readonly TodoItem[]):
         status: "active",
         percent: before?.percent ?? 0,
         hasReported: before?.hasReported ?? false,
+        startedAt: before?.startedAt ?? at,
       };
     }
     return makeTask(`todo-${i}-${name}`, name, "upcoming");
@@ -167,17 +225,24 @@ export function fromTodos(list: CleanViewChecklist, todos: readonly TodoItem[]):
   if (!tasks.some((one) => one.status === "active")) {
     const first = tasks.findIndex((one) => one.status === "upcoming");
     if (first !== -1) {
-      tasks = tasks.map((one, i) => (i === first ? { ...one, status: "active" } : one));
+      tasks = tasks.map((one, i) =>
+        i === first ? { ...one, status: "active", startedAt: one.startedAt ?? at } : one,
+      );
     }
   }
   return { ...list, tasks };
 }
 
 /** A task added as an upcoming row (or the active one if none is). */
-export function addTask(list: CleanViewChecklist, id: string, subject: string): CleanViewChecklist {
+export function addTask(
+  list: CleanViewChecklist,
+  id: string,
+  subject: string,
+  at = list.startedAt,
+): CleanViewChecklist {
   const tasks = list.tasks.filter((one) => !one.id.startsWith(PLACEHOLDER_PREFIX));
   const status = tasks.some((one) => one.status === "active") ? "upcoming" : "active";
-  return { ...list, tasks: [...tasks, makeTask(`task-${id}`, cleanName(subject), status)] };
+  return { ...list, tasks: [...tasks, makeTask(`task-${id}`, cleanName(subject), status, at)] };
 }
 
 /** Updates status and subject on the matching row. */
@@ -186,6 +251,7 @@ export function updateTask(
   id: string,
   status: "pending" | "in_progress" | "completed" | "deleted" | undefined,
   subject: string | undefined,
+  at = list.startedAt,
 ): CleanViewChecklist {
   const key = `task-${id}`;
   const index = list.tasks.findIndex((one) => one.id === key);
@@ -196,16 +262,30 @@ export function updateTask(
   );
   if (status === "in_progress") {
     tasks = tasks.map((one, i) =>
-      i === index ? { ...one, status: "active" } : one.status === "active" ? { ...one, status: "upcoming" } : one,
+      i === index
+        ? { ...one, status: "active", startedAt: one.startedAt ?? at, finishedAt: undefined }
+        : one.status === "active"
+          ? { ...one, status: "upcoming", finishedAt: undefined }
+          : one,
     );
   } else if (status === "completed") {
-    tasks = tasks.map((one, i) => (i === index ? { ...one, status: "done", percent: 100 } : one));
+    tasks = tasks.map((one, i) =>
+      i === index
+        ? { ...one, status: "done", percent: 100, startedAt: one.startedAt ?? at, finishedAt: one.finishedAt ?? at }
+        : one,
+    );
     if (!tasks.some((one) => one.status === "active")) {
       const next = tasks.findIndex((one) => one.status === "upcoming");
-      if (next !== -1) tasks = tasks.map((one, i) => (i === next ? { ...one, status: "active" } : one));
+      if (next !== -1) {
+        tasks = tasks.map((one, i) =>
+          i === next ? { ...one, status: "active", startedAt: one.startedAt ?? at } : one,
+        );
+      }
     }
   } else if (status === "pending") {
-    tasks = tasks.map((one, i) => (i === index ? { ...one, status: "upcoming", percent: 0 } : one));
+    tasks = tasks.map((one, i) =>
+      i === index ? { ...one, status: "upcoming", percent: 0, startedAt: undefined, finishedAt: undefined } : one,
+    );
   }
   return { ...list, tasks };
 }
@@ -247,6 +327,11 @@ export function duration(ms: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+export function taskElapsed(one: CleanViewTask, now: number): string {
+  if (one.status === "upcoming" || one.startedAt === undefined) return "Not started yet";
+  return duration((one.finishedAt ?? now) - one.startedAt);
 }
 
 /** Ten cells: full, filled to the percent with the next cell pulsing, a moving sweep, or empty. */
