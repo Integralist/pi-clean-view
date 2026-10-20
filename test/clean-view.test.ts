@@ -463,8 +463,7 @@ describe("extension integration", () => {
     // Must not return a replacement user message (preserves pi-auto-model compatibility)
     expect(beforeRes).toBeUndefined();
     expect(systemPromptOptions.sections.clean_view).toContain("plan_steps");
-    expect(systemPromptOptions.sections.clean_view).toContain("after each item");
-    expect(systemPromptOptions.sections.clean_view).toContain("at least every 3 tool calls");
+    expect(systemPromptOptions.sections.clean_view).toContain("Never spend a turn calling `report_progress` or `plan_steps` alone");
 
     const blockedBash = await h.callTool("bash", { command: "ls" });
     expect(blockedBash.blocked).toBe(true);
@@ -734,37 +733,7 @@ describe("extension integration", () => {
     expect(h.tools.get("plan_steps")?.description).toContain("call it again");
   });
 
-  test("denies one call after 8 tool calls with no plan or progress update, then starts counting again", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
-    tempDirs.push(dir);
-    const h = createHarness({ directory: dir, now: () => 1000 });
-    await h.emit("session_start");
-    await h.emit("before_agent_start", {
-      messageType: "user",
-      prompt: "Build my landing page",
-      systemPrompt: "",
-      systemPromptOptions: { sections: {} },
-    });
-    await h.callTool("plan_steps", { steps: ["Read brand notes", "Build pricing section"] });
-
-    for (let i = 0; i < 8; i++) {
-      expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
-    }
-    const drift = await h.callTool("bash", { command: "ls" });
-    expect(drift.blocked).toBe(true);
-    expect(drift.reason).toContain("plan_steps");
-    expect(drift.reason).toContain("report_progress");
-
-    // The retry goes through, and a progress report restarts the count.
-    expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
-    await h.callTool("report_progress", { task: "Read brand notes", percent: 50 });
-    for (let i = 0; i < 8; i++) {
-      expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
-    }
-    expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(true);
-  });
-
-  test("a to-do update resets the quiet-call count, and calls nested in codemode are not counted", async () => {
+  test("does not block tool calls after a plan exists and does not mutate activeTools or enforce gates when toggled mid-run", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);
     const h = createHarness({ directory: dir, now: () => 1000 });
@@ -778,13 +747,24 @@ describe("extension integration", () => {
     await h.callTool("plan_steps", { steps: ["Read brand notes", "Build pricing section"] });
 
     for (let i = 0; i < 20; i++) {
-      expect((await h.callTool("bash", { command: "ls" }, "codemode-1")).blocked).toBe(false);
-    }
-    for (let i = 0; i < 8; i++) await h.callTool("bash", { command: "ls" });
-    await h.callTool("TaskUpdate", { taskId: "1", status: "in_progress" });
-    for (let i = 0; i < 8; i++) {
       expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
     }
+
+    // Toggling off mid-run leaves activeTools untouched until the run settles
+    await h.commands.get("simple")!.handler("off", h.ctx);
+    expect(h.activeTools).toContain("plan_steps");
+    expect(h.activeTools).toContain("report_progress");
+
+    // Starting a new run while off removes internal tools and does not block even if toggled on mid-run
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Second task started while off",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    expect(h.activeTools).not.toContain("plan_steps");
+    await h.commands.get("simple")!.handler("on", h.ctx);
+    expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
   });
 
   test("a turn that ends while subagents run reads Waiting, then resumes when they report back", async () => {
@@ -1274,7 +1254,7 @@ describe("extension integration", () => {
     });
     await h.callTool("plan_steps", { title: "Audit config", steps: ["Read config", "Summarize findings"] });
 
-    // After 8 quiet calls, a codemode script containing report_progress is allowed and resets quietCalls
+    // A codemode script containing report_progress tracks nested calls under the active step
     for (let i = 0; i < 8; i++) {
       expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
     }

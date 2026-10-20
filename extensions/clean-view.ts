@@ -54,8 +54,6 @@ const PROGRESS_TOOL = "report_progress";
 const DEFAULT_FRAME_MS = 100;
 const DEFAULT_COLLAPSE_MS = 5000;
 const FAILURES_TO_STUCK = 3;
-// Tool calls the checklist may sit unchanged through before the next one is sent back.
-const QUIET_CALLS = 8;
 
 const NEEDS_OK = "Pi needs your OK to continue";
 const HAS_QUESTION = "Pi has a question for you";
@@ -68,7 +66,7 @@ const SPAWN_TOOLS = new Set(["spawn_named_subagent", "spawn_inline_subagent"]);
 const SUBAGENT_COMPLETE = "subagent-complete";
 const SUBAGENT_DONE = new Set(["completed", "failed", "stopped"]);
 const INTERNAL_TOOLS = new Set([PLAN_TOOL, PROGRESS_TOOL]);
-// Tools that change the checklist, so a call to one restarts the quiet-call count.
+// Tools that update the checklist directly.
 const PLAN_UPDATERS = new Set([PLAN_TOOL, PROGRESS_TOOL, "todo", "TodoWrite", "TaskCreate", "TaskUpdate"]);
 
 const ALWAYS_ALLOWED = new Set([
@@ -87,8 +85,8 @@ const SECTION = `# Clean View checklist
 The person sees a plain checklist of your plan instead of your tool calls.
 
 - For every request, even a quick question, call \`${PLAN_TOOL}\` first with a short job title and every step of the job (1 to 8 short names in order). Only include steps that perform actual work; never add a filler final step like "Prepare next action" or "Summarize findings". If you use \`codemode\`, call \`await tools.${PLAN_TOOL}({ ... })\` before calling any other tool.
-- Call \`${PROGRESS_TOOL}\` after each item of a step (each file read, check run or section written), and at least every 3 tool calls, so the person never watches a percent sit still. Pass 100 the moment a step finishes.
-- Batch \`${PLAN_TOOL}\` and \`${PROGRESS_TOOL}\` in the same response as your next tool call (or inside the same \`codemode\` script) instead of spending a separate turn on them alone. Only pass 100 after you have read a step's tool output and confirmed the step is done; when the final step is ready to answer, reply directly and Clean View completes it automatically.
+- Never spend a turn calling \`${PROGRESS_TOOL}\` or \`${PLAN_TOOL}\` alone. Always call them in the same response as your next real tool call (or inside the same \`codemode\` script).
+- Call \`${PROGRESS_TOOL}\` with 100 when a step finishes (bundled with the first tool call of the next step), or alongside a tool call when a step has taken several tool calls. Only pass 100 after you have read a step's tool output and confirmed the step is done; when the final step is ready to answer, reply directly and Clean View completes it automatically.
 - Keep internal reasoning before tool calls brief (1 to 2 sentences) so the checklist never sits idle on a long thinking pause.
 - If the job grows past your plan (extra checks, cleanup, undoing changes, a new kind of work), call \`${PLAN_TOOL}\` again with the full updated list before you do it. Keep finished step names the same so they stay checked off.
 - When a step spawns subagents, keep its progress below 100% until you have collected the subagent results (\`get_subagent_result\`).
@@ -178,10 +176,10 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   ensureThinkingPatch(() => applyWorkingVisibility(activeCtx));
 
   let enabled = loadEnabled(settingsPath);
+  let enforcedForRun = enabled;
   let checklist: CleanViewChecklist = EMPTY;
   let tick = 0;
   let failures = 0;
-  let quietCalls = 0;
   // Files read during the active step, so the activity shows real progress the model hasn't reported.
   let readsInStep = 0;
   let readsStepId: string | null = null;
@@ -280,7 +278,9 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   function setEnabled(next: boolean, ctx: ExtensionContext | undefined = activeCtx): void {
     enabled = next;
     saveEnabled(settingsPath, enabled);
-    syncActiveTools();
+    if (!isRunning(checklist)) {
+      syncActiveTools();
+    }
     applyWorkingVisibility(ctx);
     invalidateTools();
     requestRender();
@@ -659,12 +659,12 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
 
   pi.on("before_agent_start", (event, ctx) => {
     activeCtx = ctx;
+    enforcedForRun = enabled;
     syncActiveTools();
-    if (enabled && event.systemPromptOptions?.sections) {
+    if (enforcedForRun && event.systemPromptOptions?.sections) {
       event.systemPromptOptions.sections.clean_view = SECTION;
     }
     if (event.messageType === "user" && event.prompt.trim() !== "") {
-      quietCalls = 0;
       // A plan left part way (Esc, a pause, a question, subagents) carries on: a typed prompt is usually a re-steer.
       if (PAUSED_PHASES.has(checklist.phase) && hasPlan(checklist)) {
         resumeJob();
@@ -721,30 +721,11 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         ? String((event.input as { code: string }).code)
         : "";
     const isCodemodeWithPlan = code.includes(PLAN_TOOL);
-    const isCodemodeWithUpdater = isCodemodeWithPlan || code.includes(PROGRESS_TOOL);
 
-    if (enabled && isRunning(checklist) && !hasPlan(checklist) && !ALWAYS_ALLOWED.has(tool) && !isCodemodeWithPlan) {
+    if (enforcedForRun && enabled && isRunning(checklist) && !hasPlan(checklist) && !ALWAYS_ALLOWED.has(tool) && !isCodemodeWithPlan) {
       return {
         block: true,
         reason: `Clean View: call ${PLAN_TOOL} first to lay out the steps of this job, then try again.`,
-      };
-    }
-
-    // Work the checklist doesn't show: after QUIET_CALLS calls with no plan or progress update, send one back.
-    if (PLAN_UPDATERS.has(tool) || isCodemodeWithUpdater) {
-      quietCalls = 0;
-    } else if (
-      enabled &&
-      isRunning(checklist) &&
-      hasPlan(checklist) &&
-      event.parentToolCallId === undefined &&
-      !ALWAYS_ALLOWED.has(tool) &&
-      ++quietCalls > QUIET_CALLS
-    ) {
-      quietCalls = 0;
-      return {
-        block: true,
-        reason: `Clean View: the checklist hasn't changed in ${QUIET_CALLS} tool calls. If the work has grown past these steps, call ${PLAN_TOOL} with the full updated list; otherwise call ${PROGRESS_TOOL} for the current step. Then try again.`,
       };
     }
 
