@@ -1344,11 +1344,39 @@ describe("extension integration", () => {
     });
     await h.callTool("get_subagent_result", { id: "sub-direct" });
 
-    // Advance to the final step; settling on a reply (even with a follow-up question) auto-completes the final step to All done
+    // Advance to the final step; if it explicitly reported < 100% and stopped to confirm, it pauses instead of auto-completing
     await h.callTool("report_progress", { task: "Read config", percent: 100 });
+    await h.callTool("report_progress", { task: "Summarize findings", percent: 50 });
+    await h.emit("agent_end", {
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Confirm to commit to main." }] }],
+    });
+    await h.emit("agent_settled", { aborted: false });
+    const midFinalRender = h.renderWidget(100).join("\n");
+    expect(midFinalRender).toContain("■ Ended · Audit config · 1 of 2 steps done");
+    expect(midFinalRender).toMatch(/‖ Summarize findings\s+█{5}░{5}\s+Paused/);
+
+    // Replying resumes the existing checklist, streams thinking into the step log, and completing finishes the run
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "commit to main",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    await h.emit("message_update", {
+      message: { role: "assistant" },
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "Planning " },
+    });
+    await h.emit("message_update", {
+      message: { role: "assistant" },
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "the commit." },
+    });
+    await h.commands.get("simple")!.handler("inspect", h.ctx);
+    expect(h.customDialog.render(120).join("\n")).toContain("💭 Planning the commit.");
+
+    await h.callTool("report_progress", { task: "Summarize findings", percent: 100 });
     clock = 68000;
     await h.emit("agent_end", {
-      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "All checks passed. Want me to commit this?" }] }],
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "All checks passed. Want me to push this?" }] }],
     });
     await h.emit("agent_settled", { aborted: false });
     const finalRender = h.renderWidget(100).join("\n");

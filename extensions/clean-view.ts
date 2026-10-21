@@ -29,6 +29,7 @@ import {
   label,
   PAUSED_PHASES,
   newJob,
+  PLACEHOLDER_PREFIX,
   PLACEHOLDER_TITLE,
   planSteps,
   reportProgress,
@@ -300,12 +301,23 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
   }
 
-  function recordTaskLog(kind: CleanViewLogEntry["kind"], text: string): void {
+  function recordTaskLog(kind: CleanViewLogEntry["kind"], text: string, streamKey?: string): void {
     const stepId = checklist.tasks.find((one) => one.status === "active")?.id;
     if (!stepId) return;
-    const key = `${kind}-${++logSeq}`;
-    taskLogs.set(stepId, appendLog(taskLogs.get(stepId) ?? [], kind, key, text));
+    const key = streamKey ?? `${kind}-${++logSeq}`;
+    const current = taskLogs.get(stepId) ?? [];
+    const piece = streamKey !== undefined && current.at(-1)?.key !== key ? `💭 ${text}` : text;
+    taskLogs.set(stepId, appendLog(current, kind, key, piece));
     requestRender();
+  }
+
+  function transferPlaceholderLogs(): void {
+    const placeholderKey = `${PLACEHOLDER_PREFIX}thinking`;
+    const pre = taskLogs.get(placeholderKey);
+    const activeId = checklist.tasks.find((one) => one.status === "active")?.id;
+    if (!pre || pre.length === 0 || !activeId || activeId === placeholderKey) return;
+    taskLogs.delete(placeholderKey);
+    taskLogs.set(activeId, [...pre, ...(taskLogs.get(activeId) ?? [])]);
   }
 
   function startJob(promptText: string): void {
@@ -510,6 +522,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       if (!appliedToolCallIds.delete(toolCallId)) {
         const at = now();
         edit((list) => ({ ...planSteps(list, names, title, at), activity: activity("Plan updated", false, at) }));
+        transferPlaceholderLogs();
       }
       setInputThinking(false);
       const doneCount = checklist.tasks.filter((t) => t.status === "done").length;
@@ -708,11 +721,18 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     return undefined;
   });
 
+  let streamSeq = 0;
+
   // Thinking and reply text are hidden or slow to appear, so name them in the header while they stream.
   pi.on("message_update", (event) => {
-    const type = event.assistantMessageEvent.type;
+    const ev = event.assistantMessageEvent as { type?: string; contentIndex?: number; delta?: string };
+    const type = ev.type;
+    if (type === "thinking_start") streamSeq++;
     const summary = type === "thinking_start" ? "Thinking" : type === "text_start" ? "Writing the reply" : undefined;
     if (summary && isRunning(checklist)) edit((list) => ({ ...list, activity: activity(summary, true) }));
+    if (type === "thinking_delta" && typeof ev.delta === "string" && ev.delta !== "" && isRunning(checklist)) {
+      recordTaskLog("thinking", ev.delta, `thinking-${streamSeq}-${ev.contentIndex ?? 0}`);
+    }
     return undefined;
   });
 
@@ -759,6 +779,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       ensureJob();
       const at = now();
       edit((list) => ({ ...planSteps(list, names, title, at), activity: activity("Plan updated", false, at) }));
+      transferPlaceholderLogs();
       appliedToolCallIds.add(event.toolCallId);
       setInputThinking(false);
     } else if (tool === PROGRESS_TOOL && typeof input?.task === "string") {
@@ -917,7 +938,8 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         if (runningSubagents.size > 0) {
           return { ...list, phase: "waiting", needsYouReason: null, activityHint: null, waitingOn: runningSubagents.size };
         }
-        if (hasPlan(list) && !list.tasks.some((one) => one.status === "upcoming")) {
+        const active = list.tasks.find((one) => one.status === "active");
+        if (hasPlan(list) && !list.tasks.some((one) => one.status === "upcoming") && !(active?.hasReported && active.percent < 100)) {
           const finishedAt = list.finishedAt ?? now();
           return {
             ...list,
