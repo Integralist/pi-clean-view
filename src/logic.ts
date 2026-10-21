@@ -350,7 +350,7 @@ export function meter(one: CleanViewTask, frame: number): string {
 }
 
 /** Phases where a plan was left part way; its active step draws as Paused. */
-export const PAUSED_PHASES: ReadonlySet<CleanViewChecklist["phase"]> = new Set(["needsYou", "stopped", "waiting", "ended"]);
+export const PAUSED_PHASES: ReadonlySet<CleanViewChecklist["phase"]> = new Set(["needsYou", "stuck", "stopped", "waiting", "ended"]);
 
 export function label(one: CleanViewTask, isFirstUpcoming: boolean, isPaused = false): string {
   if (one.status === "done") return "Done";

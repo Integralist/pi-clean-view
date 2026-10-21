@@ -1124,6 +1124,30 @@ describe("extension integration", () => {
       systemPrompt: "",
       systemPromptOptions: { sections: {} },
     });
+    await h.callTool("plan_steps", { steps: ["Inventory SQL files", "Verify formatting"] });
+    await h.callTool("report_progress", { task: "Inventory SQL files", percent: 100 });
+    await h.emit("tool_result", {
+      toolCallId: "ask-1",
+      toolName: "AskUserQuestion",
+      input: {},
+      content: [{ type: "text", text: "The user doesn't want to proceed with this tool use. The tool use was rejected." }],
+      isError: true,
+    });
+    await h.emit("agent_settled", { aborted: false });
+    expect(h.renderWidget(100).join("\n")).toContain("⚠ Stuck: you said no to a step, so Pi paused");
+    expect(h.renderWidget(100).join("\n")).toMatch(/‖ Verify formatting\s+[█░]{10}\s+Paused/);
+
+    // Replying after a stuck pause resumes the existing checklist instead of wiping finished steps
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "sorry I pressed ESC by accident",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    expect(h.renderWidget(100).join("\n")).not.toContain("Stuck");
+    expect(h.renderWidget(100).join("\n")).toMatch(/✓ Inventory SQL files/);
+    expect(h.renderWidget(100).join("\n")).toMatch(/▶ Verify formatting\s+[█░]{10}\s+Working/);
+
     await h.emit("agent_end", {
       messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit" }],
     });
