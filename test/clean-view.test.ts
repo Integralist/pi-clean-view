@@ -755,14 +755,16 @@ describe("extension integration", () => {
     expect(h.activeTools).toContain("plan_steps");
     expect(h.activeTools).toContain("report_progress");
 
-    // Starting a new run while off removes internal tools and does not block even if toggled on mid-run
+    // Starting a new run while off removes internal tools, tells the model not to call them in codemode, and does not block even if toggled on mid-run
+    const offPromptOptions = { sections: {} as Record<string, string> };
     await h.emit("before_agent_start", {
       messageType: "user",
       prompt: "Second task started while off",
       systemPrompt: "",
-      systemPromptOptions: { sections: {} },
+      systemPromptOptions: offPromptOptions,
     });
     expect(h.activeTools).not.toContain("plan_steps");
+    expect(offPromptOptions.sections.clean_view).toContain("Do not call `plan_steps` or `report_progress`");
     await h.commands.get("simple")!.handler("on", h.ctx);
     expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
   });
@@ -1318,15 +1320,29 @@ describe("extension integration", () => {
     });
     await h.callTool("get_subagent_result", { id: "sub-direct" });
 
-    // Advance to the final step; settling on a normal reply auto-completes the final step to All done
+    // Advance to the final step; settling on a reply (even with a follow-up question) auto-completes the final step to All done
     await h.callTool("report_progress", { task: "Read config", percent: 100 });
     clock = 68000;
     await h.emit("agent_end", {
-      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "All checks passed." }] }],
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "All checks passed. Want me to commit this?" }] }],
     });
     await h.emit("agent_settled", { aborted: false });
     const finalRender = h.renderWidget(100).join("\n");
     expect(finalRender).toContain("✓ All done · Audit config · took 7s");
     expect(finalRender).toMatch(/✓ Summarize findings\s+█{10}\s+Done/);
+
+    // Replying "apply" starts a fresh job and shows the live elapsed timer while thinking (before any tool call)
+    clock = 70000;
+    await h.emit("input", { text: "apply the fix", source: "interactive", streamingBehavior: "steer" });
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "apply the fix",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    clock = 85000;
+    const thinkingRender = h.renderWidget(100).join("\n");
+    expect(thinkingRender).toContain("Apply the fix · 15s · Thinking...");
+    expect(thinkingRender).toMatch(/▶ Thinking\.\.\.\s+[█░]{10}\s+Working/);
   });
 });

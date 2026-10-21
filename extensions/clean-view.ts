@@ -95,6 +95,10 @@ The person sees a plain checklist of your plan instead of your tool calls.
 - Write every step name in plain English a non-technical person understands, under 40 characters, starting with a verb, like "Build the pricing section".
 - Never put file paths, file names, commands, code or tool names in a step name.`;
 
+const OFF_SECTION = `# Clean View checklist
+
+Clean View is off. Do not call \`${PLAN_TOOL}\` or \`${PROGRESS_TOOL}\` (including \`tools.${PLAN_TOOL}\` or \`tools.${PROGRESS_TOOL}\` inside \`codemode\`).`;
+
 const EMPTY_COMPONENT: Component = {
   render: () => [],
   invalidate: () => {},
@@ -178,6 +182,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
 
   let enabled = loadEnabled(settingsPath);
   let enforcedForRun = enabled;
+  let hadEnforcedRun = false;
   let checklist: CleanViewChecklist = EMPTY;
   let tick = 0;
   let failures = 0;
@@ -304,6 +309,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   }
 
   function startJob(promptText: string): void {
+    setInputThinking(false);
     clearCollapseTimer();
     failures = 0;
     waitingOnSubagents = 0;
@@ -318,6 +324,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   }
 
   function resumeJob(): void {
+    setInputThinking(false);
     clearCollapseTimer();
     failures = 0;
     lastAssistantText = "";
@@ -671,9 +678,14 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   pi.on("before_agent_start", (event, ctx) => {
     activeCtx = ctx;
     enforcedForRun = enabled;
+    if (enforcedForRun) hadEnforcedRun = true;
     syncActiveTools();
-    if (enforcedForRun && event.systemPromptOptions?.sections) {
-      event.systemPromptOptions.sections.clean_view = SECTION;
+    if (event.systemPromptOptions?.sections) {
+      if (enforcedForRun) {
+        event.systemPromptOptions.sections.clean_view = SECTION;
+      } else if (hadEnforcedRun) {
+        event.systemPromptOptions.sections.clean_view = OFF_SECTION;
+      }
     }
     if (event.messageType === "user" && event.prompt.trim() !== "") {
       // A plan left part way (Esc, a pause, a question, subagents) carries on: a typed prompt is usually a re-steer.
@@ -902,9 +914,6 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       // Steps left over need the person only when the turn ended on a question;
       // with subagents still running, Pi carries on when they report back.
       if (list.tasks.some((one) => one.status !== "done")) {
-        if (endsWithQuestion(lastAssistantText)) {
-          return { ...list, phase: "needsYou", needsYouReason: ASKED, activityHint: null };
-        }
         if (runningSubagents.size > 0) {
           return { ...list, phase: "waiting", needsYouReason: null, activityHint: null, waitingOn: runningSubagents.size };
         }
@@ -923,6 +932,9 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
             needsYouReason: null,
             activityHint: null,
           };
+        }
+        if (endsWithQuestion(lastAssistantText)) {
+          return { ...list, phase: "needsYou", needsYouReason: ASKED, activityHint: null };
         }
         return { ...list, phase: "ended", needsYouReason: null, activityHint: null };
       }
