@@ -29,7 +29,7 @@ animated 10-cell progress meters above the prompt.
   `Ctrl+Space`, or run `/simple inspect`, to open the active task,
   then use `←`/`→` to switch tasks and `Esc` to close. The dialog updates live
   while the run goes on.
-- **Contextual status headers:** Automatically transitions between
+- **Contextual status headers:** Until titled, shows activity and time. Then uses
   `<spinner> <Title> · <elapsed> · <activity>` (such as "Thinking" or "Writing
   the reply", so the run stays visibly alive after the last step is done),
   **Needs you** (with human-readable reasons like waiting for confirmation or reply),

@@ -20,7 +20,6 @@ import {
   duration,
   EMPTY,
   errorSentence,
-  fallbackTitle,
   fromTodos,
   hasPlan,
   isRunning,
@@ -320,7 +319,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     taskLogs.set(activeId, [...pre, ...(taskLogs.get(activeId) ?? [])]);
   }
 
-  function startJob(promptText: string): void {
+  function startJob(): void {
     setInputThinking(false);
     clearCollapseTimer();
     failures = 0;
@@ -330,8 +329,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     codemodeCallIds.clear();
     appliedToolCallIds.clear();
     const startedAt = now();
-    const title = promptText.trim() !== "" ? fallbackTitle(promptText) : PLACEHOLDER_TITLE;
-    edit(() => newJob(startedAt, title));
+    edit(() => newJob(startedAt, PLACEHOLDER_TITLE));
     startTicker();
   }
 
@@ -371,7 +369,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
 
   function ensureJob(): void {
     if (!isRunning(checklist)) {
-      startJob("");
+      startJob();
     }
   }
 
@@ -705,7 +703,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       if (PAUSED_PHASES.has(checklist.phase) && hasPlan(checklist)) {
         resumeJob();
       } else {
-        startJob(event.prompt);
+        startJob();
       }
     } else if (event.messageType === "custom") {
       subagentReported(event.message);

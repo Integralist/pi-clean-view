@@ -6,7 +6,7 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { duration, fit, isRunning, label, meter, METER_CELLS, PAUSED_PHASES } from "./logic.ts";
+import { duration, fit, isRunning, label, meter, METER_CELLS, PAUSED_PHASES, PLACEHOLDER_TITLE } from "./logic.ts";
 import type { CleanViewChecklist, CleanViewTask } from "./types.ts";
 
 const ANSI_GREEN = (text: string) => `\x1b[38;2;72;181;83m${text}\x1b[39m`;
@@ -177,6 +177,7 @@ export class CleanViewWidget implements Component {
         // The title gives way first, so a long one never pushes the activity out of sight.
         const spinner = ANSI_CYAN(THINKING_FRAMES[frame % THINKING_FRAMES.length]!);
         const doing = list.activityHint ?? list.activity?.summary;
+        if (list.title === PLACEHOLDER_TITLE) return `${spinner} ${ANSI_BOLD(doing ?? "Thinking...")} · ${took}`;
         const tail = ` · ${took}${doing ? ` · ${doing}` : ""}`;
         const title = truncateToWidth(list.title, Math.max(8, maxWidth - 2 - visibleWidth(tail)));
         return `${spinner} ${ANSI_BOLD(title)} · ${took}${doing ? ` · ${ANSI_DIM(doing)}` : ""}`;

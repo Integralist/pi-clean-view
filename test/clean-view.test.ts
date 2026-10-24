@@ -494,6 +494,19 @@ describe("extension integration", () => {
     expect(rendered).toMatch(/▶ Build pricing section\s+[█░]{10}\s+Working/);
   });
 
+  test("shows activity until the plan provides a meaningful title", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "btw `classifier prompt:274–283` and `existing tests:74–89` aren't clickable, so I approve the change", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    expect(h.renderWidget(100)[1]).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. · 0s /);
+    await h.callTool("plan_steps", { title: "Fix local links", steps: ["Check the link targets"] });
+    expect(h.renderWidget(100).join("\n")).toContain("Fix local links");
+  });
+
   test("shows Thinking as soon as steering arrives and replaces it with the new plan", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);
@@ -699,7 +712,7 @@ describe("extension integration", () => {
     await h.emit("before_agent_start", {
       messageType: "user", prompt: "Open ten files and summarise them", systemPrompt: "", systemPromptOptions: { sections: {} },
     });
-    await h.callTool("plan_steps", { steps: ["Open the files"] });
+    await h.callTool("plan_steps", { title: "Summarize the files", steps: ["Open the files"] });
     await h.callTool("report_progress", { task: "Open the files", percent: 100 });
 
     const update = (type: string) =>
@@ -777,7 +790,7 @@ describe("extension integration", () => {
     await h.emit("before_agent_start", {
       messageType: "user", prompt: "Audit SQL migrations", systemPrompt: "", systemPromptOptions: { sections: {} },
     });
-    await h.callTool("plan_steps", { steps: ["Inventory SQL files", "Verify formatting"] });
+    await h.callTool("plan_steps", { title: "Audit SQL migrations", steps: ["Inventory SQL files", "Verify formatting"] });
     const spawned = (id: string) => h.emit("tool_result", {
       toolCallId: `spawn-${id}`, toolName: "spawn_inline_subagent", input: {},
       content: [{ type: "text", text: "started" }],
@@ -827,7 +840,7 @@ describe("extension integration", () => {
       messageType: "user", prompt, systemPrompt: "", systemPromptOptions: { sections: {} },
     });
     await typed("Audit SQL migrations");
-    await h.callTool("plan_steps", { steps: ["Inventory SQL files", "Verify formatting"] });
+    await h.callTool("plan_steps", { title: "Audit SQL migrations", steps: ["Inventory SQL files", "Verify formatting"] });
     await h.callTool("report_progress", { task: "Inventory SQL files", percent: 100 });
     await h.emit("agent_settled", { aborted: true });
 
@@ -1040,7 +1053,7 @@ describe("extension integration", () => {
       code: "await tools.plan_steps({ steps: ['Inventory SQL files', 'Verify formatting'] })",
     });
     expect(allowedCodemode.blocked).toBe(false);
-    await h.callTool("plan_steps", { steps: ["Inventory SQL files", "Verify formatting"] }, "codemode-1");
+    await h.callTool("plan_steps", { title: "Audit SQL migrations", steps: ["Inventory SQL files", "Verify formatting"] }, "codemode-1");
 
     // Settling mid-plan without a question needs nothing from the person: it reads Ended, not Needs you
     await h.emit("agent_end", {
@@ -1115,7 +1128,7 @@ describe("extension integration", () => {
       systemPromptOptions: { sections: {} },
     });
     await h.emit("agent_settled", { aborted: true });
-    expect(h.renderWidget(80).join("\n")).toContain("■ Stopped · Audit SQL migrations · you pressed Esc");
+    expect(h.renderWidget(80).join("\n")).toContain("■ Stopped · Your request · you pressed Esc");
 
     // Assistant stopReason === "error" shows calm Stuck message
     await h.emit("before_agent_start", {
@@ -1394,7 +1407,7 @@ describe("extension integration", () => {
     });
     clock = 85000;
     const thinkingRender = h.renderWidget(100).join("\n");
-    expect(thinkingRender).toContain("Apply the fix · 15s · Thinking...");
+    expect(thinkingRender).toContain("Thinking... · 15s");
     expect(thinkingRender).toMatch(/▶ Thinking\.\.\.\s+[█░]{10}\s+Working/);
   });
 });
