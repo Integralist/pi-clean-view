@@ -352,10 +352,38 @@ export function meter(one: CleanViewTask, frame: number): string {
 /** Phases where a plan was left part way; its active step draws as Paused. */
 export const PAUSED_PHASES: ReadonlySet<CleanViewChecklist["phase"]> = new Set(["needsYou", "stuck", "stopped", "waiting", "ended"]);
 
-export function label(one: CleanViewTask, isFirstUpcoming: boolean, isPaused = false): string {
+export const LONG_STEP_MS = 15_000;
+export const MODEL_STALL_MS = 30_000;
+
+export function isModelStalled(list: CleanViewChecklist, now: number): boolean {
+  if (!isRunning(list) || PAUSED_PHASES.has(list.phase) || list.activityHint) return false;
+  const act = list.activity;
+  if (!act) return false;
+  const waitingOnModel = !act.inProgress || act.summary.startsWith("Thinking") || act.summary === "Writing the reply";
+  return waitingOnModel && now - act.at >= MODEL_STALL_MS;
+}
+
+export function isLongRunningTask(one: CleanViewTask, isPaused: boolean, now?: number): boolean {
+  return (
+    one.status === "active" &&
+    !isPaused &&
+    !one.id.startsWith(PLACEHOLDER_PREFIX) &&
+    one.startedAt !== undefined &&
+    now !== undefined &&
+    now - one.startedAt >= LONG_STEP_MS
+  );
+}
+
+export function label(one: CleanViewTask, isFirstUpcoming: boolean, isPaused = false, now?: number): string {
   if (one.status === "done") return "Done";
   if (one.status === "active" && isPaused) return "Paused";
-  if (one.status === "active") return one.hasReported ? `${one.percent}%` : "Working";
+  if (one.status === "active") {
+    const base = one.hasReported ? `${one.percent}%` : "Working";
+    if (isLongRunningTask(one, isPaused, now) && now !== undefined && one.startedAt !== undefined) {
+      return `${base} · ${duration(now - one.startedAt)}`;
+    }
+    return base;
+  }
   return isFirstUpcoming ? "Next" : "Up next";
 }
 

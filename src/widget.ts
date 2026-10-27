@@ -6,7 +6,7 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { duration, fit, isRunning, label, meter, METER_CELLS, PAUSED_PHASES, PLACEHOLDER_TITLE } from "./logic.ts";
+import { duration, fit, isLongRunningTask, isModelStalled, isRunning, label, meter, METER_CELLS, PAUSED_PHASES, PLACEHOLDER_TITLE } from "./logic.ts";
 import type { CleanViewChecklist, CleanViewTask } from "./types.ts";
 
 const ANSI_GREEN = (text: string) => `\x1b[38;2;72;181;83m${text}\x1b[39m`;
@@ -100,10 +100,11 @@ export class CleanViewWidget implements Component {
     const currentNow = live ? this.state.now() : (list.finishedAt ?? list.startedAt);
     const took = duration(currentNow - list.startedAt);
     const frame = live ? this.state.getFrame() : 0;
+    const isPaused = PAUSED_PHASES.has(list.phase);
     const maxHeaderWidth = Math.max(0, width - rightWidth - 1);
     const header = isThinking
       ? `${ANSI_CYAN(THINKING_FRAMES[frame % THINKING_FRAMES.length]!)} ${ANSI_BOLD("Thinking...")}`
-      : this.renderHeader(list, took, frame, maxHeaderWidth);
+      : this.renderHeader(list, took, frame, maxHeaderWidth, currentNow, isPaused);
 
     const truncatedHeader = truncateToWidth(header, maxHeaderWidth);
     const headerWidth = visibleWidth(truncatedHeader);
@@ -120,13 +121,17 @@ export class CleanViewWidget implements Component {
     if (list.isCollapsed || isThinking) {
       return ["", headerLine];
     }
-    const nameWidth = Math.max(8, width - (2 + 1 + METER_CELLS + 2 + 7));
     const firstUpcoming = list.tasks.findIndex((one) => one.status === "upcoming");
+    const maxTagWidth = Math.max(
+      7,
+      ...list.tasks.map((one, i) => label(one, i === firstUpcoming, isPaused, currentNow).length),
+    );
+    const nameWidth = Math.max(8, width - (2 + 1 + METER_CELLS + 2 + maxTagWidth));
     this.taskRowStart = 3;
     this.taskIds = list.tasks.map((one) => one.id);
     const rows = list.tasks.map((one, i) =>
       truncateToWidth(
-        this.renderRow(one, i === firstUpcoming, PAUSED_PHASES.has(list.phase), frame, nameWidth),
+        this.renderRow(one, i === firstUpcoming, isPaused, frame, nameWidth, currentNow),
         width,
       ),
     );
@@ -153,7 +158,14 @@ export class CleanViewWidget implements Component {
     return undefined;
   }
 
-  private renderHeader(list: CleanViewChecklist, took: string, frame: number, maxWidth: number): string {
+  private renderHeader(
+    list: CleanViewChecklist,
+    took: string,
+    frame: number,
+    maxWidth: number,
+    currentNow: number,
+    isPaused: boolean,
+  ): string {
     void this.getTheme;
     switch (list.phase) {
       case "needsYou":
@@ -176,11 +188,17 @@ export class CleanViewWidget implements Component {
         // The spinner and current activity keep the run visibly alive, even after the last step is done.
         // The title gives way first, so a long one never pushes the activity out of sight.
         const spinner = ANSI_CYAN(THINKING_FRAMES[frame % THINKING_FRAMES.length]!);
-        const doing = list.activityHint ?? list.activity?.summary;
+        const stalled = isModelStalled(list, currentNow) && list.activity
+          ? `No model output for ${duration(currentNow - list.activity.at)} (Esc to stop)`
+          : undefined;
+        const doing = stalled ?? list.activityHint ?? list.activity?.summary;
+        const activeTask = list.tasks.find((one) => one.status === "active");
+        const inspectHint =
+          activeTask && isLongRunningTask(activeTask, isPaused, currentNow) ? "ctrl+space to inspect" : undefined;
         if (list.title === PLACEHOLDER_TITLE) return `${spinner} ${ANSI_BOLD(doing ?? "Thinking...")} · ${took}`;
-        const tail = ` · ${took}${doing ? ` · ${doing}` : ""}`;
-        const title = truncateToWidth(list.title, Math.max(8, maxWidth - 2 - visibleWidth(tail)));
-        return `${spinner} ${ANSI_BOLD(title)} · ${took}${doing ? ` · ${ANSI_DIM(doing)}` : ""}`;
+        const tailPlain = ` · ${took}${doing ? ` · ${doing}` : ""}${inspectHint ? ` · ${inspectHint}` : ""}`;
+        const title = truncateToWidth(list.title, Math.max(8, maxWidth - 2 - visibleWidth(tailPlain)));
+        return `${spinner} ${ANSI_BOLD(title)} · ${took}${doing ? ` · ${ANSI_DIM(doing)}` : ""}${inspectHint ? ` · ${ANSI_DIM(inspectHint)}` : ""}`;
       }
     }
   }
@@ -191,10 +209,11 @@ export class CleanViewWidget implements Component {
     isPaused: boolean,
     frame: number,
     width: number,
+    currentNow: number,
   ): string {
     const name = fit(one.name, width);
     const bar = meter(one, frame);
-    const tag = label(one, isFirstUpcoming, isPaused);
+    const tag = label(one, isFirstUpcoming, isPaused, currentNow);
     if (one.status === "done") {
       return `${ANSI_GREEN("✓")} ${ANSI_DIM(name)} ${ANSI_GREEN(bar)}  ${ANSI_DIM(tag)}`;
     }

@@ -617,6 +617,54 @@ describe("extension integration", () => {
     expect(h.renderWidget(120).join("\n")).toContain("Read 2 files in this step");
   });
 
+  test("counts bash commands in the active step and shows step elapsed time + inspect hint on long-running steps", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    let clock = 1000;
+    const h = createHarness({ directory: dir, now: () => clock });
+    await h.emit("session_start");
+    const systemPromptOptions = { sections: {} as Record<string, string> };
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Verify skill configuration",
+      systemPrompt: "",
+      systemPromptOptions,
+    });
+    expect(systemPromptOptions.sections.clean_view).toContain("including the final step");
+
+    await h.callTool("plan_steps", { title: "Check Pi settings", steps: ["Inspect settings file", "Verify skill configuration"] });
+    await h.callTool("bash", { command: "ls" });
+    expect(h.renderWidget(120).join("\n")).toContain("Ran 1 command in this step");
+    await h.callTool("bash", { command: "git status" });
+    expect(h.renderWidget(120).join("\n")).toContain("Ran 2 commands in this step");
+
+    // Advancing to step 2 resets the command counter for the new step
+    clock = 5000;
+    await h.callTool("report_progress", { task: "Inspect settings file", percent: 100 });
+    await h.callTool("bash", { command: "git diff" });
+    expect(h.renderWidget(120).join("\n")).toContain("Ran 1 command in this step");
+
+    // Once the active step runs >= 15s (clock=23000 -> 18s on step 2, 22s overall), show step elapsed time and inspect hint
+    clock = 23000;
+    const longRender = h.renderWidget(120).join("\n");
+    expect(longRender).toContain("ctrl+space to inspect");
+    expect(longRender).toMatch(/▶ Verify skill configuration\s+[█░]{10}\s+Working · 18s/);
+
+    // If no model output arrives for >= 30s after the last tool result (or thinking delta), show stall notice
+    clock = 36000;
+    const stalledRender = h.renderWidget(140).join("\n");
+    expect(stalledRender).toContain("No model output for 31s (Esc to stop)");
+
+    // Active thinking deltas refresh the activity timestamp and clear the stall notice
+    await h.emit("message_update", {
+      message: { role: "assistant" },
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "Still working..." },
+    });
+    const refreshedRender = h.renderWidget(140).join("\n");
+    expect(refreshedRender).not.toContain("No model output");
+    expect(refreshedRender).toContain("Thinking");
+  });
+
   test("opening task details is not a question for the person", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);
