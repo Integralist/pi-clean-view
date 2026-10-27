@@ -352,6 +352,16 @@ export function meter(one: CleanViewTask, frame: number): string {
 /** Phases where a plan was left part way; its active step draws as Paused. */
 export const PAUSED_PHASES: ReadonlySet<CleanViewChecklist["phase"]> = new Set(["needsYou", "stuck", "stopped", "waiting", "ended"]);
 
+/** Extracts the latest `**Heading**` from a streaming thinking block, if present. */
+export function extractThinkingHeading(text: string): string | undefined {
+  let last: string | undefined;
+  for (const match of text.matchAll(/\*\*([^*\r\n]{2,60})\*\*/g)) {
+    const heading = match[1]?.trim();
+    if (heading) last = heading;
+  }
+  return last;
+}
+
 export const LONG_STEP_MS = 15_000;
 export const MODEL_STALL_MS = 30_000;
 

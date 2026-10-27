@@ -21,6 +21,7 @@ import {
   duration,
   EMPTY,
   errorSentence,
+  extractThinkingHeading,
   fallbackTitle,
   fit,
   fromTodos,
@@ -655,14 +656,25 @@ describe("extension integration", () => {
     const stalledRender = h.renderWidget(140).join("\n");
     expect(stalledRender).toContain("No model output for 31s (Esc to stop)");
 
-    // Active thinking deltas refresh the activity timestamp and clear the stall notice
+    // Active thinking deltas refresh the activity timestamp, clear the stall notice, and extract **Heading** titles
+    expect(extractThinkingHeading("**First Heading** body **Investigating Stall Cause** more")).toBe("Investigating Stall Cause");
+    expect(extractThinkingHeading("Plain thinking without markdown bold")).toBeUndefined();
+
     await h.emit("message_update", {
       message: { role: "assistant" },
-      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "Still working..." },
+      assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
     });
-    const refreshedRender = h.renderWidget(140).join("\n");
+    await h.emit("message_update", {
+      message: { role: "assistant" },
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "**Investigating Stall" },
+    });
+    await h.emit("message_update", {
+      message: { role: "assistant" },
+      assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: " Cause**\n\nI'm probing the stall..." },
+    });
+    const refreshedRender = h.renderWidget(160).join("\n");
     expect(refreshedRender).not.toContain("No model output");
-    expect(refreshedRender).toContain("Thinking");
+    expect(refreshedRender).toContain("Thinking: Investigating Stall Cause");
   });
 
   test("opening task details is not a question for the person", async () => {

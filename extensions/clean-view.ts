@@ -20,6 +20,7 @@ import {
   duration,
   EMPTY,
   errorSentence,
+  extractThinkingHeading,
   fromTodos,
   hasPlan,
   isRunning,
@@ -722,16 +723,22 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   });
 
   let streamSeq = 0;
+  let thinkingBuffer = "";
 
   // Thinking and reply text are hidden or slow to appear, so name them in the header while they stream.
   pi.on("message_update", (event) => {
     const ev = event.assistantMessageEvent as { type?: string; contentIndex?: number; delta?: string };
     const type = ev.type;
-    if (type === "thinking_start") streamSeq++;
+    if (type === "thinking_start") {
+      streamSeq++;
+      thinkingBuffer = "";
+    }
     const summary = type === "thinking_start" ? "Thinking" : type === "text_start" ? "Writing the reply" : undefined;
     if (summary && isRunning(checklist)) edit((list) => ({ ...list, activity: activity(summary, true) }));
     if (type === "thinking_delta" && typeof ev.delta === "string" && ev.delta !== "" && isRunning(checklist)) {
-      edit((list) => ({ ...list, activity: activity("Thinking", true) }));
+      thinkingBuffer += ev.delta;
+      const heading = extractThinkingHeading(thinkingBuffer);
+      edit((list) => ({ ...list, activity: activity(heading ? `Thinking: ${heading}` : "Thinking", true) }));
       recordTaskLog("thinking", ev.delta, `thinking-${streamSeq}-${ev.contentIndex ?? 0}`);
     }
     if (type === "text_delta" && typeof ev.delta === "string" && ev.delta !== "" && isRunning(checklist)) {
