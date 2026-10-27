@@ -963,7 +963,10 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
           return { ...list, phase: "waiting", needsYouReason: null, activityHint: null, waitingOn: runningSubagents.size };
         }
         const active = list.tasks.find((one) => one.status === "active");
-        if (hasPlan(list) && !list.tasks.some((one) => one.status === "upcoming") && !(active?.hasReported && active.percent < 100)) {
+        if (active?.hasReported && active.percent < 100 && endsWithQuestion(lastAssistantText)) {
+          return { ...list, phase: "needsYou", needsYouReason: ASKED, activityHint: null };
+        }
+        if (hasPlan(list) && !list.tasks.some((one) => one.status === "upcoming")) {
           const finishedAt = list.finishedAt ?? now();
           return {
             ...list,

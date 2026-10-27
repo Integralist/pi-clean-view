@@ -645,10 +645,10 @@ describe("extension integration", () => {
     await h.callTool("bash", { command: "git diff" });
     expect(h.renderWidget(120).join("\n")).toContain("Ran 1 command in this step");
 
-    // Once the active step runs >= 15s (clock=23000 -> 18s on step 2, 22s overall), show step elapsed time and inspect hint
+    // Once the active step runs >= 15s (clock=23000 -> 18s on step 2, 22s overall), show step elapsed time without static inspect hint
     clock = 23000;
     const longRender = h.renderWidget(120).join("\n");
-    expect(longRender).toContain("ctrl+space to inspect");
+    expect(longRender).not.toContain("ctrl+space to inspect");
     expect(longRender).toMatch(/▶ Verify skill configuration\s+[█░]{10}\s+Working · 18s/);
 
     // If no model output arrives for >= 30s after the last tool result (or thinking delta), show stall notice
@@ -1417,18 +1417,18 @@ describe("extension integration", () => {
     });
     await h.callTool("get_subagent_result", { id: "sub-direct" });
 
-    // Advance to the final step; if it explicitly reported < 100% and stopped to confirm, it pauses instead of auto-completing
+    // Advance to the final step; if it explicitly reported < 100% and stopped with a question, it pauses with Needs you
     await h.callTool("report_progress", { task: "Read config", percent: 100 });
     await h.callTool("report_progress", { task: "Summarize findings", percent: 50 });
     await h.emit("agent_end", {
-      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Confirm to commit to main." }] }],
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Confirm to commit to main?" }] }],
     });
     await h.emit("agent_settled", { aborted: false });
     const midFinalRender = h.renderWidget(100).join("\n");
-    expect(midFinalRender).toContain("■ Ended · Audit config · 1 of 2 steps done");
+    expect(midFinalRender).toContain("Needs you");
     expect(midFinalRender).toMatch(/‖ Summarize findings\s+█{5}░{5}\s+Paused/);
 
-    // Replying resumes the existing checklist, streams thinking into the step log, and completing finishes the run
+    // Replying resumes the existing checklist, streams thinking into the step log, and settling after a normal reply auto-completes even at < 100%
     await h.emit("before_agent_start", {
       messageType: "user",
       prompt: "commit to main",
@@ -1446,10 +1446,10 @@ describe("extension integration", () => {
     await h.commands.get("simple")!.handler("inspect", h.ctx);
     expect(h.customDialog.render(120).join("\n")).toContain("💭 Planning the commit.");
 
-    await h.callTool("report_progress", { task: "Summarize findings", percent: 100 });
+    await h.callTool("report_progress", { task: "Summarize findings", percent: 80 });
     clock = 68000;
     await h.emit("agent_end", {
-      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "All checks passed. Want me to push this?" }] }],
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Committed and pushed to origin/main." }] }],
     });
     await h.emit("agent_settled", { aborted: false });
     const finalRender = h.renderWidget(100).join("\n");

@@ -6,7 +6,7 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { duration, fit, isLongRunningTask, isModelStalled, isRunning, label, meter, METER_CELLS, PAUSED_PHASES, PLACEHOLDER_TITLE } from "./logic.ts";
+import { duration, fit, isModelStalled, isRunning, label, meter, METER_CELLS, PAUSED_PHASES, PLACEHOLDER_TITLE } from "./logic.ts";
 import type { CleanViewChecklist, CleanViewTask } from "./types.ts";
 
 const ANSI_GREEN = (text: string) => `\x1b[38;2;72;181;83m${text}\x1b[39m`;
@@ -104,7 +104,7 @@ export class CleanViewWidget implements Component {
     const maxHeaderWidth = Math.max(0, width - rightWidth - 1);
     const header = isThinking
       ? `${ANSI_CYAN(THINKING_FRAMES[frame % THINKING_FRAMES.length]!)} ${ANSI_BOLD("Thinking...")}`
-      : this.renderHeader(list, took, frame, maxHeaderWidth, currentNow, isPaused);
+      : this.renderHeader(list, took, frame, maxHeaderWidth, currentNow);
 
     const truncatedHeader = truncateToWidth(header, maxHeaderWidth);
     const headerWidth = visibleWidth(truncatedHeader);
@@ -164,7 +164,6 @@ export class CleanViewWidget implements Component {
     frame: number,
     maxWidth: number,
     currentNow: number,
-    isPaused: boolean,
   ): string {
     void this.getTheme;
     switch (list.phase) {
@@ -192,13 +191,10 @@ export class CleanViewWidget implements Component {
           ? `No model output for ${duration(currentNow - list.activity.at)} (Esc to stop)`
           : undefined;
         const doing = stalled ?? list.activityHint ?? list.activity?.summary;
-        const activeTask = list.tasks.find((one) => one.status === "active");
-        const inspectHint =
-          activeTask && isLongRunningTask(activeTask, isPaused, currentNow) ? "ctrl+space to inspect" : undefined;
         if (list.title === PLACEHOLDER_TITLE) return `${spinner} ${ANSI_BOLD(doing ?? "Thinking...")} · ${took}`;
-        const tailPlain = ` · ${took}${doing ? ` · ${doing}` : ""}${inspectHint ? ` · ${inspectHint}` : ""}`;
+        const tailPlain = ` · ${took}${doing ? ` · ${doing}` : ""}`;
         const title = truncateToWidth(list.title, Math.max(8, maxWidth - 2 - visibleWidth(tailPlain)));
-        return `${spinner} ${ANSI_BOLD(title)} · ${took}${doing ? ` · ${ANSI_DIM(doing)}` : ""}${inspectHint ? ` · ${ANSI_DIM(inspectHint)}` : ""}`;
+        return `${spinner} ${ANSI_BOLD(title)} · ${took}${doing ? ` · ${ANSI_DIM(doing)}` : ""}`;
       }
     }
   }
