@@ -40,6 +40,11 @@ animated 10-cell progress meters above the prompt.
 > Compatible with both `pi-transcript-enhancer` and `pi-auto-model`. System
 > prompt guidance is injected via `systemPromptOptions.sections` without
 > mutating the user prompt.
+>
+> If `Ctrl+Space` does nothing on macOS (for example, after adding a keyboard
+> or input layout), open **System Settings → Keyboard → Keyboard Shortcuts →
+> Input Sources** and uncheck **Select the previous input source** (`^Space`),
+> which intercepts `Ctrl+Space` before it reaches the terminal.
 
 ## Install
 
