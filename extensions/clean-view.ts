@@ -86,7 +86,7 @@ const SECTION = `# Clean View checklist
 
 The person sees a plain checklist of your plan instead of your tool calls.
 
-- For every request, even a quick question, call \`${PLAN_TOOL}\` first with a short job title and every step of the job (1 to 8 short names in order). Only include steps that perform actual work; never add a filler final step like "Prepare next action" or "Summarize findings". If you use \`codemode\`, call \`await tools.${PLAN_TOOL}({ ... })\` before calling any other tool.
+- For every request, even a quick question, call \`${PLAN_TOOL}\` first with a short job title and every step of the job (1 to 8 short names in order). Only include steps that call tools; never add a reply-only final step like "Explain...", "Answer...", "Prepare next action", or "Summarize findings". If you use \`codemode\`, call \`await tools.${PLAN_TOOL}({ ... })\` before calling any other tool.
 - Never spend a turn calling \`${PROGRESS_TOOL}\` or \`${PLAN_TOOL}\` alone. Always call them in the same response as your next real tool call (or inside the same \`codemode\` script).
 - Call \`${PROGRESS_TOOL}\` with 100 when a step finishes (bundled with the first tool call of the next step), or alongside a tool call when a step has taken several tool calls. Report an intermediate percent (such as 25, 50, or 75) every few tool calls during any multi-tool step, including the final step. Only pass 100 after you have read a step's tool output and confirmed the step is done; when the final step is ready to answer, reply directly and Clean View completes it automatically.
 - Keep internal reasoning before tool calls brief (1 to 2 sentences) so the checklist never sits idle on a long thinking pause.
@@ -963,10 +963,11 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
           return { ...list, phase: "waiting", needsYouReason: null, activityHint: null, waitingOn: runningSubagents.size };
         }
         const active = list.tasks.find((one) => one.status === "active");
-        if (active?.hasReported && active.percent < 100 && endsWithQuestion(lastAssistantText)) {
+        const hasUpcoming = list.tasks.some((one) => one.status === "upcoming");
+        if (endsWithQuestion(lastAssistantText) && (hasUpcoming || (active?.hasReported && active.percent < 100))) {
           return { ...list, phase: "needsYou", needsYouReason: ASKED, activityHint: null };
         }
-        if (hasPlan(list) && !list.tasks.some((one) => one.status === "upcoming")) {
+        if (hasPlan(list)) {
           const finishedAt = list.finishedAt ?? now();
           return {
             ...list,
@@ -981,9 +982,6 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
             needsYouReason: null,
             activityHint: null,
           };
-        }
-        if (endsWithQuestion(lastAssistantText)) {
-          return { ...list, phase: "needsYou", needsYouReason: ASKED, activityHint: null };
         }
         return { ...list, phase: "ended", needsYouReason: null, activityHint: null };
       }

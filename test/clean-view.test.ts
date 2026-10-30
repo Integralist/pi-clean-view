@@ -886,9 +886,10 @@ describe("extension integration", () => {
     expect(rendered).not.toContain("Waiting on");
     expect(rendered).toMatch(/▶ Inventory SQL files\s+[█░]{10}\s+Working/);
 
-    // With nothing left running, a turn that ends mid-plan reads Ended
-    await settle("Checked the files.");
-    expect(h.renderWidget(100).join("\n")).toContain("■ Ended · Audit SQL migrations");
+    // With nothing left running, a turn that settles normally completes the remaining steps
+    await settle("Checked the files and verified formatting.");
+    expect(h.renderWidget(100).join("\n")).toContain("✓ All done · Audit SQL migrations");
+    expect(h.renderWidget(100).join("\n")).toMatch(/✓ Verify formatting\s+█{10}\s+Done/);
   });
 
   test("Esc mid-plan reads Stopped with the step Paused; a report does not revive it; a typed prompt carries on", async () => {
@@ -1115,22 +1116,21 @@ describe("extension integration", () => {
     expect(allowedCodemode.blocked).toBe(false);
     await h.callTool("plan_steps", { title: "Audit SQL migrations", steps: ["Inventory SQL files", "Verify formatting"] }, "codemode-1");
 
-    // Settling mid-plan without a question needs nothing from the person: it reads Ended, not Needs you
+    // Settling mid-plan with a question pauses in Needs you; replying "continue" resumes the existing checklist
     await h.emit("agent_end", {
       messages: [
         {
           role: "assistant",
           stopReason: "stop",
-          content: [{ type: "text", text: "I am checking whether those findings hold up before I summarize them." }],
+          content: [{ type: "text", text: "Should I check the staging migrations before I verify formatting?" }],
         },
       ],
     });
     await h.emit("agent_settled", { aborted: false });
-    expect(h.renderWidget(100).join("\n")).not.toContain("Needs you");
-    expect(h.renderWidget(100).join("\n")).toContain("■ Ended · Audit SQL migrations · 0 of 2 steps done");
-    expect(h.renderWidget(100).join("\n")).toMatch(/‖ Inventory SQL files/);
+    expect(h.renderWidget(100).join("\n")).toContain("Needs you");
+    expect(h.renderWidget(100).join("\n")).toMatch(/‖ Inventory SQL files\s+[█░]{10}\s+Paused/);
 
-    // Replying "continue" to an ended plan resumes the existing checklist instead of wiping it
+    // Replying "continue" to a paused plan resumes the existing checklist instead of wiping it
     await h.emit("before_agent_start", {
       messageType: "user",
       prompt: "continue",
@@ -1391,10 +1391,10 @@ describe("extension integration", () => {
       isError: false,
     });
 
-    // Pause at t=5000 (4s elapsed), resume after 60s of user idle time at t=65000 -> timer still shows 4s, not 1m 4s
+    // Pause on a question at t=5000 (4s elapsed), resume after 60s of user idle time at t=65000 -> timer still shows 4s, not 1m 4s
     clock = 5000;
     await h.emit("agent_end", {
-      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Paused mid-plan." }] }],
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Paused mid-plan — continue?" }] }],
     });
     await h.emit("agent_settled", { aborted: false });
     clock = 65000;
