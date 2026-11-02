@@ -842,6 +842,32 @@ describe("extension integration", () => {
     expect((await h.callTool("bash", { command: "ls" })).blocked).toBe(false);
   });
 
+  test("does not carry a pending subagent into a fresh checklist", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    const typed = (prompt: string) => h.emit("before_agent_start", {
+      messageType: "user", prompt, systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.emit("session_start");
+    await typed("Finish the first task");
+    await h.callTool("plan_steps", { steps: ["Finish the first task"] });
+    await h.emit("tool_result", {
+      toolCallId: "spawn-old", toolName: "spawn_inline_subagent", input: {}, content: [],
+      details: { id: "sub-old", status: "running" }, isError: false,
+    });
+    await h.callTool("report_progress", { task: "Finish the first task", percent: 100 });
+    await h.emit("agent_settled", { aborted: false });
+
+    await typed("Start a fresh task");
+    await h.callTool("plan_steps", { steps: ["Finish the fresh task"] });
+    await h.emit("agent_settled", { aborted: false });
+
+    const rendered = h.renderWidget(80).join("\n");
+    expect(rendered).toContain("All done");
+    expect(rendered).not.toContain("Waiting on");
+  });
+
   test("a turn that ends while subagents run reads Waiting, then resumes when they report back", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);

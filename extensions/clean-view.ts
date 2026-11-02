@@ -327,6 +327,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     clearCollapseTimer();
     failures = 0;
     waitingOnSubagents = 0;
+    runningSubagents.clear();
     lastAssistantText = "";
     taskLogs.clear();
     codemodeCallIds.clear();
