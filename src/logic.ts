@@ -121,7 +121,8 @@ export function planSteps(
     );
   }
   const nextTitle = title !== undefined && title.trim() !== "" ? fallbackTitle(title) : list.title;
-  return { ...list, title: nextTitle, tasks };
+  const startedAt = hasPlan(list) && !tasks.some((one) => kept.has(one.name.toLowerCase())) ? at : list.startedAt;
+  return { ...list, title: nextTitle, startedAt, tasks };
 }
 
 function same(a: string, b: string): boolean {
@@ -310,9 +311,13 @@ export function errorSentence(answer: string): string {
   return "something went wrong talking to the model, try again";
 }
 
-/** True when a turn's last words put a question to the person. */
+const FOLLOW_UP_OFFER =
+  /[.!]\s+(?:do you want|would you like|want me to|want to|shall i)\b[^?]*\?\s*$/i;
+
+/** True when a turn's last words put a blocking question to the person rather than a post-completion offer. */
 export function endsWithQuestion(text: string): boolean {
-  return text.trim().endsWith("?");
+  const trimmed = text.trim();
+  return trimmed.endsWith("?") && !FOLLOW_UP_OFFER.test(trimmed);
 }
 
 export function isUserRejection(text: string | undefined): boolean {

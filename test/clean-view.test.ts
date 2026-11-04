@@ -20,6 +20,7 @@ import {
   cleanName,
   duration,
   EMPTY,
+  endsWithQuestion,
   errorSentence,
   extractThinkingHeading,
   fallbackTitle,
@@ -290,6 +291,20 @@ describe("logic", () => {
       ["Clean up formatting", "upcoming"],
       ["Check page", "upcoming"],
     ]);
+    expect(list.startedAt).toBe(1000);
+
+    // Replacing an existing plan with a completely disjoint set of steps resets startedAt to the new plan time
+    const replaced = planSteps(list, ["Check remote branch", "Push main"], "Push main", 9000);
+    expect(replaced.startedAt).toBe(9000);
+  });
+
+  test("endsWithQuestion distinguishes blocking questions from post-completion follow-up offers", () => {
+    expect(endsWithQuestion("Which directory should I check next?")).toBe(true);
+    expect(endsWithQuestion("Should I check the staging migrations before I verify formatting?")).toBe(true);
+    expect(endsWithQuestion("Confirm to commit to main?")).toBe(true);
+    expect(endsWithQuestion("The working tree is clean. Do you want me to push `main`?")).toBe(false);
+    expect(endsWithQuestion("All checks passed. Want me to commit this?")).toBe(false);
+    expect(endsWithQuestion("Committed on main. Would you like me to open a PR?")).toBe(false);
   });
 
   test("fromTodos, addTask, and updateTask synchronize external task tools", () => {
@@ -1495,5 +1510,38 @@ describe("extension integration", () => {
     const thinkingRender = h.renderWidget(100).join("\n");
     expect(thinkingRender).toContain("Thinking... · 15s");
     expect(thinkingRender).toMatch(/▶ Thinking\.\.\.\s+[█░]{10}\s+Working/);
+
+    // Finishing a multi-step plan without reporting every step and ending with a follow-up offer completes to All done, so replying "yes" starts a fresh job instead of resuming the finished plan
+    await h.callTool("plan_steps", {
+      title: "Ignore binary and commit changes",
+      steps: ["Ignore the built binary", "Commit the HTML renderer", "Confirm the commit history"],
+    });
+    await h.callTool("bash", { command: "git commit -m 'chore'" });
+    clock = 95000;
+    await h.emit("agent_end", {
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "The working tree is clean. Do you want me to push `main`?" }],
+        },
+      ],
+    });
+    await h.emit("agent_settled", { aborted: false });
+    const postCommitRender = h.renderWidget(100).join("\n");
+    expect(postCommitRender).toContain("✓ All done · Ignore binary and commit changes");
+    expect(postCommitRender).not.toContain("Needs you");
+
+    clock = 100000;
+    await h.emit("before_agent_start", {
+      messageType: "user",
+      prompt: "yes",
+      systemPrompt: "",
+      systemPromptOptions: { sections: {} },
+    });
+    const afterYesRender = h.renderWidget(100).join("\n");
+    expect(afterYesRender).not.toContain("Ignore binary and commit changes");
+    expect(afterYesRender).not.toContain("Resumed the task list");
+    expect(afterYesRender).toMatch(/▶ Thinking\.\.\.\s+[█░]{10}\s+Working/);
   });
 });
