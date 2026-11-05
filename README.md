@@ -3,6 +3,8 @@
 Hides tool calls and output while Pi works, showing a concise checklist and
 animated 10-cell progress meters above the prompt.
 
+![Clean View](./screenshot.png)
+
 ## Features
 
 - **Toggle on or off:** Click `[ ● Clean View: ON ]` above the prompt, or run
