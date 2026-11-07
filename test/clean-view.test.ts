@@ -916,6 +916,23 @@ describe("extension integration", () => {
     expect(rendered).not.toContain("Needs you");
     expect(rendered).not.toContain("Ended");
 
+    // An interrupted get_subagent_result (status still "running") must not clear the running subagent
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "how is the subagent getting on?", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.emit("tool_call", { toolCallId: "wait-interrupted", toolName: "get_subagent_result", input: { id: "sub-1" } });
+    await h.emit("tool_result", {
+      toolCallId: "wait-interrupted",
+      toolName: "get_subagent_result",
+      input: { id: "sub-1" },
+      content: [{ type: "text", text: 'Subagent "inline" (sub-1) is still working. Stopped waiting because the user sent a message: answer it first.' }],
+      details: { id: "sub-1", agent: "inline", status: "running", description: "check", unknownTools: [] },
+      isError: false,
+    });
+    await settle("It is still active.");
+    expect(h.renderWidget(100).join("\n")).toContain("⏳ Waiting on 1 subagent · Audit SQL migrations");
+    expect(h.renderWidget(100).join("\n")).not.toContain("All done");
+
     // The last one reports back and wakes Pi: the same checklist resumes
     await reported("sub-1");
     await h.emit("before_agent_start", {
@@ -931,6 +948,17 @@ describe("extension integration", () => {
     await settle("Checked the files and verified formatting.");
     expect(h.renderWidget(100).join("\n")).toContain("✓ All done · Audit SQL migrations");
     expect(h.renderWidget(100).join("\n")).toMatch(/✓ Verify formatting\s+█{10}\s+Done/);
+
+    // If a late custom message wakes Pi after the checklist is already "done", it starts a fresh job and keeps tools active across mid-run toggles
+    await h.emit("before_agent_start", {
+      messageType: "custom",
+      message: { customType: "subagent-complete", content: "late report", display: true, details: { id: "sub-late" } },
+      systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    expect(h.renderWidget(100).join("\n")).toMatch(/▶ Thinking\.\.\.\s+[█░]{10}\s+Working/);
+    await h.commands.get("simple")!.handler("off", h.ctx);
+    expect(h.activeTools).toContain("plan_steps");
+    await h.commands.get("simple")!.handler("on", h.ctx);
   });
 
   test("Esc mid-plan reads Stopped with the step Paused; a report does not revive it; a typed prompt carries on", async () => {
@@ -1146,9 +1174,13 @@ describe("extension integration", () => {
       systemPromptOptions: { sections: {} },
     });
 
-    // codemode without plan_steps is blocked
+    // codemode without plan_steps (or only mentioning plan_steps in a string/regex) is blocked
     const blockedCodemode = await h.callTool("codemode", { code: "await tools.bash({ command: 'ls' })" });
     expect(blockedCodemode.blocked).toBe(true);
+    const regexMentionCodemode = await h.callTool("codemode", {
+      code: "text(ALL_TOOLS.filter(t => /plan_steps|report_progress/.test(t.name)))",
+    });
+    expect(regexMentionCodemode.blocked).toBe(true);
 
     // codemode containing plan_steps is allowed, and nested plan_steps plans the job
     const allowedCodemode = await h.callTool("codemode", {

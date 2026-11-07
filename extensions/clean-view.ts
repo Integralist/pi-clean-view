@@ -68,6 +68,7 @@ const SPAWN_TOOLS = new Set(["spawn_named_subagent", "spawn_inline_subagent"]);
 const SUBAGENT_COMPLETE = "subagent-complete";
 const SUBAGENT_DONE = new Set(["completed", "failed", "stopped"]);
 const INTERNAL_TOOLS = new Set([PLAN_TOOL, PROGRESS_TOOL]);
+const CODEMODE_PLAN_CALL = /\btools\s*(?:\.\s*plan_steps\b|\[\s*["'`]plan_steps["'`]\s*\])\s*\(/;
 // Tools that update the checklist directly.
 const PLAN_UPDATERS = new Set([PLAN_TOOL, PROGRESS_TOOL, "todo", "TodoWrite", "TaskCreate", "TaskUpdate"]);
 
@@ -184,6 +185,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   let enabled = loadEnabled(settingsPath);
   let enforcedForRun = enabled;
   let hadEnforcedRun = false;
+  let agentRunning = false;
   let checklist: CleanViewChecklist = EMPTY;
   let tick = 0;
   let failures = 0;
@@ -287,7 +289,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   function setEnabled(next: boolean, ctx: ExtensionContext | undefined = activeCtx): void {
     enabled = next;
     saveEnabled(settingsPath, enabled);
-    if (!isRunning(checklist)) {
+    if (!agentRunning && !isRunning(checklist)) {
       syncActiveTools();
     }
     applyWorkingVisibility(ctx);
@@ -348,6 +350,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       return {
         ...list,
         phase: "working",
+        isCollapsed: false,
         startedAt: list.startedAt + pauseMs,
         tasks: list.tasks.map((one) =>
           one.status === "active" && one.startedAt !== undefined
@@ -656,6 +659,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
 
   pi.on("session_start", (_event, ctx) => {
     inputThinking = false;
+    agentRunning = false;
     enabled = loadEnabled(settingsPath);
     toolInvalidators.clear();
     syncActiveTools();
@@ -667,6 +671,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   });
 
   pi.on("session_shutdown", () => {
+    agentRunning = false;
     stopAllTimers();
     toolInvalidators.clear();
     activeTui = undefined;
@@ -692,6 +697,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
 
   pi.on("before_agent_start", (event, ctx) => {
     activeCtx = ctx;
+    agentRunning = true;
     enforcedForRun = enabled;
     if (enforcedForRun) hadEnforcedRun = true;
     syncActiveTools();
@@ -711,8 +717,9 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       }
     } else if (event.messageType === "custom") {
       subagentReported(event.message);
-      // A report revives a live or paused plan, but never one the person stopped with Esc.
-      if (checklist.phase !== "idle" && checklist.phase !== "done" && checklist.phase !== "stopped") resumeJob();
+      // A report revives a live or paused plan, or starts a fresh job after a completed one, but never revives Esc.
+      if (checklist.phase === "done") startJob();
+      else if (checklist.phase !== "idle" && checklist.phase !== "stopped") resumeJob();
     }
     return undefined;
   });
@@ -775,7 +782,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       typeof (event.input as { code?: unknown })?.code === "string"
         ? String((event.input as { code: string }).code)
         : "";
-    const isCodemodeWithPlan = code.includes(PLAN_TOOL);
+    const isCodemodeWithPlan = CODEMODE_PLAN_CALL.test(code);
 
     if (enforcedForRun && enabled && isRunning(checklist) && !hasPlan(checklist) && !ALWAYS_ALLOWED.has(tool) && !isCodemodeWithPlan) {
       return {
@@ -877,7 +884,11 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         edit((current) => ({ ...current, activityHint: null }));
       }
     }
-    if ((event.toolName === "get_subagent_result" || event.toolName === "stop_subagent") && !event.isError && typeof input?.id === "string") {
+    const resultStatus = (event.details as { status?: unknown } | undefined)?.status;
+    const subagentDone =
+      event.toolName === "stop_subagent" ||
+      (resultStatus !== undefined ? SUBAGENT_DONE.has(String(resultStatus)) : !/is still working\b/i.test(extractText(event.content)));
+    if ((event.toolName === "get_subagent_result" || event.toolName === "stop_subagent") && !event.isError && typeof input?.id === "string" && subagentDone) {
       runningSubagents.delete(input.id);
     }
     backToWork();
@@ -949,6 +960,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   });
 
   pi.on("agent_settled", (event) => {
+    agentRunning = false;
     clearCollapseTimer();
     waitingOnSubagents = 0;
     if (event.aborted) {
