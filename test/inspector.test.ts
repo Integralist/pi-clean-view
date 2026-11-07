@@ -110,4 +110,66 @@ describe("TaskDetailsDialog", () => {
     dialog.handleInput(RIGHT);
     expect(dialog.render(120).join("\n")).toContain("Nothing recorded for this step yet");
   });
+
+  test("wraps thinking lines in the step log without wrapping other log kinds", () => {
+    const longThinking =
+      "💭 **Checking the step log layout** so long thinking lines wrap cleanly across rows in the box";
+    const longCall = `→ bash {"command":"${"echo hello ".repeat(10)}"}`;
+    const { dialog } = open(
+      details({
+        logs: [
+          { kind: "thinking", key: "th1", text: longThinking },
+          { kind: "call", key: "c1", text: longCall },
+        ],
+      }),
+    );
+
+    const rendered = dialog.render(100).join("\n");
+    expect(rendered).toContain("💭 **Checking the step log layout** so long");
+    expect(rendered).toContain("thinking lines wrap cleanly across rows in the");
+    expect(rendered).toContain("│ box");
+    expect(rendered).toContain("→ bash {\"command\":\"echo hello ");
+    expect(rendered).toContain("…");
+  });
+
+  test("toggles thinking-only filter in step log via 't' key and header button click", () => {
+    const logs = [
+      { kind: "thinking" as const, key: "th1", text: "💭 **Planning the approach**" },
+      { kind: "call" as const, key: "c1", text: "→ read {\"path\":\"src/inspector.ts\"}" },
+      { kind: "result" as const, key: "r1", text: "← file contents" },
+    ];
+    const { dialog } = open(details({ logs }));
+
+    const initialLines = dialog.render(120);
+    const initial = initialLines.join("\n");
+    expect(initial).toContain("Planning the approach");
+    expect(initial).toContain("src/inspector.ts");
+    expect(initial).toContain("[○ Thinking (t)]");
+
+    dialog.handleInput("t");
+    const filtered = dialog.render(120).join("\n");
+    expect(filtered).toContain("Planning the approach");
+    expect(filtered).not.toContain("src/inspector.ts");
+    expect(filtered).not.toContain("file contents");
+    expect(filtered).toContain("[● Thinking (t)]");
+
+    const headerRow = initialLines.findIndex((line) => line.includes("[○ Thinking (t)]"));
+    const buttonX = initialLines[headerRow]!.indexOf("[○ Thinking (t)]") + 2;
+    dialog.handleMouse?.({
+      type: "click",
+      button: "left",
+      x: buttonX,
+      y: headerRow,
+      screenX: buttonX,
+      screenY: headerRow,
+      width: 120,
+      height: 15,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    });
+    const unfiltered = dialog.render(120).join("\n");
+    expect(unfiltered).toContain("src/inspector.ts");
+    expect(unfiltered).toContain("[○ Thinking (t)]");
+  });
 });

@@ -3,6 +3,7 @@ import {
   matchesKey,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type Component,
   type KeybindingsManager,
   type TUI,
@@ -49,6 +50,9 @@ export class TaskDetailsDialog implements Component {
   private selected = 0;
   private logScroll = 0;
   private maxLogScroll = 0;
+  private thinkingOnly = false;
+  private filterButtonRow = -1;
+  private filterButtonRange: [number, number] | undefined;
 
   constructor(
     private tui: TUI,
@@ -69,38 +73,70 @@ export class TaskDetailsDialog implements Component {
     return this.details.canStop ? [CLOSE, STOP] : [CLOSE];
   }
 
-  private renderLogBox(boxWidth: number, innerRows: number, logs: readonly CleanViewLogEntry[]): string[] {
+  private renderLogBox(
+    boxWidth: number,
+    innerRows: number,
+    logs: readonly CleanViewLogEntry[],
+    colOffset: number,
+    headerRow: number,
+  ): string[] {
     const t = this.theme;
     const contentWidth = Math.max(8, boxWidth - 4);
-    const reversed = [...logs].reverse();
+    const filtered = this.thinkingOnly ? logs.filter((entry) => entry.kind === "thinking") : logs;
+    const reversed = [...filtered].reverse();
     const lines = reversed.flatMap((entry) =>
-      entry.text.split("\n").map((line) => ({
-        kind: entry.kind,
-        text: fit(line, contentWidth),
-      })),
+      entry.text.split("\n").flatMap((line) => {
+        if (entry.kind === "thinking") {
+          return wrapTextWithAnsi(line, contentWidth).map((wrapped) => ({
+            kind: entry.kind,
+            text: padRightVisible(wrapped, contentWidth),
+          }));
+        }
+        return [
+          {
+            kind: entry.kind,
+            text: fit(line, contentWidth),
+          },
+        ];
+      }),
     );
     this.maxLogScroll = Math.max(0, lines.length - innerRows);
     const offset = Math.min(this.logScroll, this.maxLogScroll);
     this.logScroll = offset;
     const visible = lines.slice(offset, offset + innerRows);
 
+    const filterPlain = this.thinkingOnly ? "[● Thinking (t)]" : "[○ Thinking (t)]";
+    const filterStyled = this.thinkingOnly ? t.fg("accent", t.bold(filterPlain)) : t.fg("dim", filterPlain);
+    const filterWidth = visibleWidth(filterPlain);
     const headerSuffix =
       lines.length > innerRows
         ? t.fg("dim", `  ${offset + 1}-${offset + visible.length} of ${lines.length} (scroll to view)`)
         : "";
-    const header = truncateToWidth(`${t.bold("Step log · newest first")}${headerSuffix}`, boxWidth);
+    const titleLabel = this.thinkingOnly ? "Step log · thinking only" : "Step log · newest first";
+    const maxTitleWidth = Math.max(0, boxWidth - filterWidth - 1);
+    const truncatedTitle = truncateToWidth(`${t.bold(titleLabel)}${headerSuffix}`, maxTitleWidth);
+    const titleWidth = visibleWidth(truncatedTitle);
+    const gap = Math.max(1, boxWidth - titleWidth - filterWidth);
+    const header = truncateToWidth(`${truncatedTitle}${" ".repeat(gap)}${filterStyled}`, boxWidth);
+    this.filterButtonRow = headerRow;
+    const buttonStart = colOffset + titleWidth + gap;
+    this.filterButtonRange = [buttonStart, buttonStart + filterWidth];
+
     const borderH = "─".repeat(Math.max(0, boxWidth - 2));
     const top = t.fg("dim", `╭${borderH}╮`);
     const bottom = t.fg("dim", `╰${borderH}╯`);
     const side = t.fg("dim", "│");
 
+    const emptyLabel = this.thinkingOnly
+      ? "No thinking recorded for this step yet"
+      : "Nothing recorded for this step yet";
     const bodyRows: string[] = [];
     for (let i = 0; i < innerRows; i++) {
       const row = visible[i];
       if (!row) {
         const emptyText =
           i === 0 && visible.length === 0
-            ? t.fg("dim", fit("Nothing recorded for this step yet", contentWidth))
+            ? t.fg("dim", fit(emptyLabel, contentWidth))
             : " ".repeat(contentWidth);
         bodyRows.push(`${side} ${emptyText} ${side}`);
       } else {
@@ -118,6 +154,8 @@ export class TaskDetailsDialog implements Component {
   }
 
   render(width: number): string[] {
+    this.filterButtonRow = -1;
+    this.filterButtonRange = undefined;
     const t = this.theme;
     const d = this.details;
     const tone = toneOf(d.task, d.isPaused);
@@ -139,7 +177,7 @@ export class TaskDetailsDialog implements Component {
       ...this.options.map(option),
       "",
       t.fg("dim", "  Stop ends the entire run; it will not skip ahead to another task."),
-      t.fg("dim", "  ←→ switch task · ↑↓ choose · PgUp/PgDn/wheel log · Enter · Esc"),
+      t.fg("dim", "  ←→ switch task · ↑↓ choose · t thinking · PgUp/PgDn/wheel log · Enter · Esc"),
     ];
 
     const logs = d.logs ?? [];
@@ -147,7 +185,7 @@ export class TaskDetailsDialog implements Component {
       const leftWidth = Math.min(LEFT_COL_WIDTH, Math.floor(width * 0.48));
       const rightWidth = width - leftWidth - COL_GAP;
       const innerRows = Math.max(4, leftLines.length - 3);
-      const rightLines = this.renderLogBox(rightWidth, innerRows, logs);
+      const rightLines = this.renderLogBox(rightWidth, innerRows, logs, leftWidth + COL_GAP, 1);
       const totalRows = Math.max(leftLines.length, rightLines.length);
       const combined: string[] = [rule];
       for (let i = 0; i < totalRows; i++) {
@@ -159,7 +197,9 @@ export class TaskDetailsDialog implements Component {
       return combined.map((line) => truncateToWidth(line, width));
     }
 
-    const logBox = this.renderLogBox(Math.max(20, width - 2), 6, logs).map((line) => `  ${line}`);
+    const logBox = this.renderLogBox(Math.max(20, width - 2), 6, logs, 2, leftLines.length + 2).map(
+      (line) => `  ${line}`,
+    );
     return [rule, ...leftLines, "", ...logBox, rule].map((line) => truncateToWidth(line, width));
   }
 
@@ -168,11 +208,18 @@ export class TaskDetailsDialog implements Component {
     this.tui.requestRender();
   }
 
+  private toggleThinkingOnly(): void {
+    this.thinkingOnly = !this.thinkingOnly;
+    this.logScroll = 0;
+    this.tui.requestRender();
+  }
+
   handleInput(data: string): void {
     if (this.keys.matches(data, "tui.select.confirm")) return this.done(this.options[this.selected]);
     if (this.keys.matches(data, "tui.select.cancel")) return this.done(undefined);
     if (this.keys.matches(data, "tui.select.up")) this.selected = Math.max(0, this.selected - 1);
     else if (this.keys.matches(data, "tui.select.down")) this.selected = Math.min(this.options.length - 1, this.selected + 1);
+    else if (matchesKey(data, "t")) return this.toggleThinkingOnly();
     else if (matchesKey(data, "pageUp")) return this.scrollLog(-5);
     else if (matchesKey(data, "pageDown")) return this.scrollLog(5);
     else if (matchesKey(data, "left")) {
@@ -186,6 +233,17 @@ export class TaskDetailsDialog implements Component {
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (
+      event.type === "click" &&
+      event.button === "left" &&
+      event.y === this.filterButtonRow &&
+      this.filterButtonRange &&
+      event.x >= this.filterButtonRange[0] &&
+      event.x < this.filterButtonRange[1]
+    ) {
+      this.toggleThinkingOnly();
+      return { handled: true, render: true };
+    }
     if (event.type === "wheel" && event.wheelDelta !== undefined && event.wheelDelta !== 0) {
       this.scrollLog(event.wheelDelta);
       return { handled: true, render: true };
