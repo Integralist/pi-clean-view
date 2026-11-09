@@ -405,24 +405,28 @@ export function label(one: CleanViewTask, isFirstUpcoming: boolean, isPaused = f
 // The newest entries a step's raw log keeps, and the characters each summary line keeps.
 export const LOG_ENTRIES = 200;
 export const LOG_ENTRY_CHARS = 160;
+export const LOG_THINKING_CHARS = 4000;
 
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u{10eeee}]/gu;
 
-function stripBrokenChars(text: string): string {
-  return text
-    .slice(0, LOG_ENTRY_CHARS * 4)
-    .replace(ANSI, "")
-    .replace(/[\r\n\t]+/g, " ")
+function stripBrokenChars(text: string, maxChars: number = LOG_ENTRY_CHARS, preserveNewlines = false): string {
+  const base = text
+    .slice(0, maxChars * 4)
+    .replace(ANSI, "");
+  const normalized = preserveNewlines
+    ? base.replace(/\r/g, "").replace(/\t/g, "  ")
+    : base.replace(/[\r\n\t]+/g, " ");
+  return normalized
     .replace(LONE_SURROGATE, "")
     .replace(CONTROL, "");
 }
 
-function clip(text: string): string {
-  const clean = stripBrokenChars(text);
-  if (clean.length <= LOG_ENTRY_CHARS) return clean;
-  return `${clean.slice(0, LOG_ENTRY_CHARS).replace(LONE_SURROGATE, "")}…`;
+function clip(text: string, maxChars: number = LOG_ENTRY_CHARS, preserveNewlines = false): string {
+  const clean = stripBrokenChars(text, maxChars, preserveNewlines);
+  if (clean.length <= maxChars) return clean;
+  return `${clean.slice(0, maxChars).replace(LONE_SURROGATE, "")}…`;
 }
 
 /**
@@ -436,8 +440,12 @@ export function appendLog(
   text: string,
 ): CleanViewLogEntry[] {
   const last = log.at(-1);
-  if (last?.key === key) return [...log.slice(0, -1), { ...last, text: clip(last.text + text) }];
-  return [...log, { kind, key, text: clip(text) }].slice(-LOG_ENTRIES);
+  const isThinking = kind === "thinking";
+  const maxChars = isThinking ? LOG_THINKING_CHARS : LOG_ENTRY_CHARS;
+  if (last?.key === key) {
+    return [...log.slice(0, -1), { ...last, text: clip(last.text + text, maxChars, isThinking) }];
+  }
+  return [...log, { kind, key, text: clip(text, maxChars, isThinking) }].slice(-LOG_ENTRIES);
 }
 
 /** A name sized to the column: cut with "…" when it would wrap, padded otherwise. */

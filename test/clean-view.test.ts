@@ -32,6 +32,7 @@ import {
   label,
   LOG_ENTRIES,
   LOG_ENTRY_CHARS,
+  LOG_THINKING_CHARS,
   meter,
   newJob,
   planSteps,
@@ -349,10 +350,10 @@ describe("logic", () => {
 
   test("appendLog joins consecutive pieces with the same key, caps length, and strips control codes", () => {
     let log = appendLog([], "thinking", "b0", "Let me ");
-    log = appendLog(log, "thinking", "b0", "think.");
+    log = appendLog(log, "thinking", "b0", "think.\nSecond line.");
     log = appendLog(log, "call", "b1", "\x1b[32mRead\x1b[0m ");
     expect(log).toEqual([
-      { kind: "thinking", key: "b0", text: "Let me think." },
+      { kind: "thinking", key: "b0", text: "Let me think.\nSecond line." },
       { kind: "call", key: "b1", text: "Read " },
     ]);
 
@@ -360,9 +361,17 @@ describe("logic", () => {
     expect(log).toHaveLength(LOG_ENTRIES);
     expect(log[0]?.key).toBe("r5");
 
-    const long = appendLog([], "result", "r", "x".repeat(LOG_ENTRY_CHARS + 50))[0]!.text;
-    expect(long).toHaveLength(LOG_ENTRY_CHARS + 1);
-    expect(long.endsWith("…")).toBe(true);
+    const longResult = appendLog([], "result", "r", "x".repeat(LOG_ENTRY_CHARS + 50))[0]!.text;
+    expect(longResult).toHaveLength(LOG_ENTRY_CHARS + 1);
+    expect(longResult.endsWith("…")).toBe(true);
+
+    const moderateThinking = appendLog([], "thinking", "th", "x".repeat(500))[0]!.text;
+    expect(moderateThinking).toHaveLength(500);
+    expect(moderateThinking.endsWith("…")).toBe(false);
+
+    const longThinking = appendLog([], "thinking", "th", "x".repeat(LOG_THINKING_CHARS + 50))[0]!.text;
+    expect(longThinking).toHaveLength(LOG_THINKING_CHARS + 1);
+    expect(longThinking.endsWith("…")).toBe(true);
   });
 });
 
