@@ -36,7 +36,7 @@ import {
   taskElapsed,
   updateTask,
 } from "../src/logic.ts";
-import { STOP, TaskDetailsDialog } from "../src/inspector.ts";
+import { INSPECT_SHORTCUT, STOP, TaskDetailsDialog } from "../src/inspector.ts";
 import type { CleanViewActivity, CleanViewChecklist, CleanViewLogEntry, TodoItem } from "../src/types.ts";
 import { CleanViewWidget } from "../src/widget.ts";
 
@@ -48,7 +48,6 @@ export interface CleanViewOptions {
 }
 
 const COMMAND = "simple";
-const INSPECT_SHORTCUT = "ctrl+space";
 const WIDGET_KEY = "clean-view";
 const SETTINGS_FILE = "pi-clean-view.json";
 const PLAN_TOOL = "plan_steps";
@@ -383,6 +382,7 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   // Pi announces every dialog as a prompt; Clean View's own task details must not read as a question.
   let isOwnDialogPending = false;
   let isOwnDialogOpen = false;
+  let activeDetailsClose: ((choice: string | undefined) => void) | undefined;
 
   async function inspectTask(taskId: string, ctx: ExtensionContext | undefined = activeCtx): Promise<void> {
     if (!ctx?.hasUI) return;
@@ -410,10 +410,15 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       }));
     };
     isOwnDialogPending = true;
-    const choice = await ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) =>
-      new TaskDetailsDialog(tui, theme, keybindings, pages, start, done),
-    );
+    const choice = await ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
+      activeDetailsClose = done;
+      return new TaskDetailsDialog(tui, theme, keybindings, pages, start, (choice) => {
+        activeDetailsClose = undefined;
+        done(choice);
+      }, INSPECT_SHORTCUT);
+    });
     isOwnDialogPending = false;
+    activeDetailsClose = undefined;
     if (choice === STOP) ctx.abort();
   }
 
@@ -567,6 +572,10 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
   });
 
   async function inspectCurrent(ctx: ExtensionContext): Promise<void> {
+    if (activeDetailsClose) {
+      activeDetailsClose(undefined);
+      return;
+    }
     const task = checklist.tasks.find((one) => one.status === "active") ?? checklist.tasks[0];
     if (task) await inspectTask(task.id, ctx);
     else ctx.ui.notify("There is no task to inspect", "info");

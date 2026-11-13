@@ -37,6 +37,12 @@ describe("TaskDetailsDialog", () => {
     expect(choices).toEqual([undefined]);
   });
 
+  test("Ctrl+Space closes without choosing an option", () => {
+    const { dialog, choices } = open(details());
+    dialog.handleInput("\x00");
+    expect(choices).toEqual([undefined]);
+  });
+
   test("moving past the last option stays on it", () => {
     const { dialog, choices } = open(details());
     dialog.handleInput("tui.select.down");

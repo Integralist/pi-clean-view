@@ -15,6 +15,7 @@ import type { CleanViewLogEntry, CleanViewTask } from "./types.ts";
 
 export const CLOSE = "Close";
 export const STOP = "Stop entire run";
+export const INSPECT_SHORTCUT = "ctrl+space";
 const SIDE_BY_SIDE_MIN_WIDTH = 90;
 const LEFT_COL_WIDTH = 56;
 const COL_GAP = 2;
@@ -61,6 +62,7 @@ export class TaskDetailsDialog implements Component {
     private pages: () => TaskDetails[],
     private page: number,
     private done: (choice: string | undefined) => void,
+    private toggleShortcut: string = INSPECT_SHORTCUT,
   ) {}
 
   private get details(): TaskDetails {
@@ -217,6 +219,9 @@ export class TaskDetailsDialog implements Component {
   handleInput(data: string): void {
     if (this.keys.matches(data, "tui.select.confirm")) return this.done(this.options[this.selected]);
     if (this.keys.matches(data, "tui.select.cancel")) return this.done(undefined);
+    if (this.toggleShortcut && (data === this.toggleShortcut || matchesKey(data, this.toggleShortcut as any))) {
+      return this.done(undefined);
+    }
     if (this.keys.matches(data, "tui.select.up")) this.selected = Math.max(0, this.selected - 1);
     else if (this.keys.matches(data, "tui.select.down")) this.selected = Math.min(this.options.length - 1, this.selected + 1);
     else if (matchesKey(data, "t")) return this.toggleThinkingOnly();

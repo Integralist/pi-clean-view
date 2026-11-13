@@ -735,6 +735,33 @@ describe("extension integration", () => {
     expect(h.renderWidget(80).join("\n")).toContain("Needs you");
   });
 
+  test("pressing ctrl+space while task details is open toggles it closed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Inspect the task", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Inspect the files"] });
+
+    let isClosed = false;
+    (h.ctx.ui as any).custom = (factory: any) =>
+      new Promise((resolve) => {
+        factory({ requestRender() {} }, h.theme, { matches: () => false }, (choice: any) => {
+          isClosed = true;
+          resolve(choice);
+        });
+      });
+
+    void h.shortcuts.get("ctrl+space")!.handler(h.ctx);
+    await Promise.resolve();
+    expect(isClosed).toBe(false);
+
+    await h.shortcuts.get("ctrl+space")!.handler(h.ctx);
+    expect(isClosed).toBe(true);
+  });
+
   test("an open details dialog keeps its times and progress live", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);
