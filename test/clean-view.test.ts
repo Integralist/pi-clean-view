@@ -361,6 +361,10 @@ describe("logic", () => {
     expect(log).toHaveLength(LOG_ENTRIES);
     expect(log[0]?.key).toBe("r5");
 
+    const moderateResult = appendLog([], "result", "r", `${"x".repeat(250)}\nsecond line`)[0]!.text;
+    expect(moderateResult).toContain("\nsecond line");
+    expect(moderateResult.endsWith("…")).toBe(false);
+
     const longResult = appendLog([], "result", "r", "x".repeat(LOG_ENTRY_CHARS + 50))[0]!.text;
     expect(longResult).toHaveLength(LOG_ENTRY_CHARS + 1);
     expect(longResult.endsWith("…")).toBe(true);

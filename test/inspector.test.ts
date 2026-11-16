@@ -178,4 +178,45 @@ describe("TaskDetailsDialog", () => {
     expect(unfiltered).toContain("src/inspector.ts");
     expect(unfiltered).toContain("[○ Thinking (t)]");
   });
+
+  test("toggles wrapping for all log lines via 'w' key and header button click", () => {
+    const logs = [
+      { kind: "call" as const, key: "c1", text: `→ bash {"command":"${"echo hello ".repeat(10)}end-of-cmd"}` },
+      { kind: "result" as const, key: "r1", text: "← line one\nline two with full output" },
+      { kind: "error" as const, key: "e1", text: `← error: ${"bad failure ".repeat(8)}tail` },
+    ];
+    const { dialog } = open(details({ logs }));
+
+    const initialLines = dialog.render(100);
+    const initial = initialLines.join("\n");
+    expect(initial).toContain("[○ Wrap (w)]");
+    expect(initial).not.toContain("end-of-cmd");
+    expect(initial).toContain("← line one line two");
+
+    dialog.handleInput("w");
+    const wrapped = dialog.render(100).join("\n");
+    expect(wrapped).toContain("[● Wrap (w)]");
+    expect(wrapped).toContain("end-of-cmd");
+    expect(wrapped).toContain("line two with full output");
+    expect(wrapped).toContain("tail");
+
+    const headerRow = initialLines.findIndex((line) => line.includes("[○ Wrap (w)]"));
+    const buttonX = initialLines[headerRow]!.indexOf("[○ Wrap (w)]") + 2;
+    dialog.handleMouse?.({
+      type: "click",
+      button: "left",
+      x: buttonX,
+      y: headerRow,
+      screenX: buttonX,
+      screenY: headerRow,
+      width: 100,
+      height: 15,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    });
+    const unwrapped = dialog.render(100).join("\n");
+    expect(unwrapped).toContain("[○ Wrap (w)]");
+    expect(unwrapped).not.toContain("end-of-cmd");
+  });
 });

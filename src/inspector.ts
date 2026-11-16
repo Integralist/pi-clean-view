@@ -52,8 +52,10 @@ export class TaskDetailsDialog implements Component {
   private logScroll = 0;
   private maxLogScroll = 0;
   private thinkingOnly = false;
+  private wrapAll = false;
   private filterButtonRow = -1;
   private filterButtonRange: [number, number] | undefined;
+  private wrapButtonRange: [number, number] | undefined;
 
   constructor(
     private tui: TUI,
@@ -86,22 +88,22 @@ export class TaskDetailsDialog implements Component {
     const contentWidth = Math.max(8, boxWidth - 4);
     const filtered = this.thinkingOnly ? logs.filter((entry) => entry.kind === "thinking") : logs;
     const reversed = [...filtered].reverse();
-    const lines = reversed.flatMap((entry) =>
-      entry.text.split("\n").flatMap((line) => {
-        if (entry.kind === "thinking") {
-          return wrapTextWithAnsi(line, contentWidth).map((wrapped) => ({
+    const lines = reversed.flatMap((entry) => {
+      if (this.wrapAll || entry.kind === "thinking") {
+        return entry.text.split("\n").flatMap((line) =>
+          wrapTextWithAnsi(line, contentWidth).map((wrapped) => ({
             kind: entry.kind,
             text: padRightVisible(wrapped, contentWidth),
-          }));
-        }
-        return [
-          {
-            kind: entry.kind,
-            text: fit(line, contentWidth),
-          },
-        ];
-      }),
-    );
+          })),
+        );
+      }
+      return [
+        {
+          kind: entry.kind,
+          text: fit(entry.text.replace(/[\r\n\t]+/g, " "), contentWidth),
+        },
+      ];
+    });
     this.maxLogScroll = Math.max(0, lines.length - innerRows);
     const offset = Math.min(this.logScroll, this.maxLogScroll);
     this.logScroll = offset;
@@ -109,20 +111,26 @@ export class TaskDetailsDialog implements Component {
 
     const filterPlain = this.thinkingOnly ? "[● Thinking (t)]" : "[○ Thinking (t)]";
     const filterStyled = this.thinkingOnly ? t.fg("accent", t.bold(filterPlain)) : t.fg("dim", filterPlain);
+    const wrapPlain = this.wrapAll ? "[● Wrap (w)]" : "[○ Wrap (w)]";
+    const wrapStyled = this.wrapAll ? t.fg("accent", t.bold(wrapPlain)) : t.fg("dim", wrapPlain);
     const filterWidth = visibleWidth(filterPlain);
+    const wrapWidth = visibleWidth(wrapPlain);
+    const buttonsWidth = filterWidth + 1 + wrapWidth;
     const headerSuffix =
       lines.length > innerRows
         ? t.fg("dim", `  ${offset + 1}-${offset + visible.length} of ${lines.length} (scroll to view)`)
         : "";
     const titleLabel = this.thinkingOnly ? "Step log · thinking only" : "Step log · newest first";
-    const maxTitleWidth = Math.max(0, boxWidth - filterWidth - 1);
+    const maxTitleWidth = Math.max(0, boxWidth - buttonsWidth - 1);
     const truncatedTitle = truncateToWidth(`${t.bold(titleLabel)}${headerSuffix}`, maxTitleWidth);
     const titleWidth = visibleWidth(truncatedTitle);
-    const gap = Math.max(1, boxWidth - titleWidth - filterWidth);
-    const header = truncateToWidth(`${truncatedTitle}${" ".repeat(gap)}${filterStyled}`, boxWidth);
+    const gap = Math.max(1, boxWidth - titleWidth - buttonsWidth);
+    const header = truncateToWidth(`${truncatedTitle}${" ".repeat(gap)}${filterStyled} ${wrapStyled}`, boxWidth);
     this.filterButtonRow = headerRow;
     const buttonStart = colOffset + titleWidth + gap;
     this.filterButtonRange = [buttonStart, buttonStart + filterWidth];
+    const wrapStart = buttonStart + filterWidth + 1;
+    this.wrapButtonRange = [wrapStart, wrapStart + wrapWidth];
 
     const borderH = "─".repeat(Math.max(0, boxWidth - 2));
     const top = t.fg("dim", `╭${borderH}╮`);
@@ -158,6 +166,7 @@ export class TaskDetailsDialog implements Component {
   render(width: number): string[] {
     this.filterButtonRow = -1;
     this.filterButtonRange = undefined;
+    this.wrapButtonRange = undefined;
     const t = this.theme;
     const d = this.details;
     const tone = toneOf(d.task, d.isPaused);
@@ -179,7 +188,7 @@ export class TaskDetailsDialog implements Component {
       ...this.options.map(option),
       "",
       t.fg("dim", "  Stop ends the entire run; it will not skip ahead to another task."),
-      t.fg("dim", "  ←→ switch task · ↑↓ choose · t thinking · PgUp/PgDn/wheel log · Enter · Esc"),
+      t.fg("dim", "  ←→ switch task · ↑↓ choose · t thinking · w wrap · PgUp/PgDn/wheel log · Enter · Esc"),
     ];
 
     const logs = d.logs ?? [];
@@ -216,6 +225,12 @@ export class TaskDetailsDialog implements Component {
     this.tui.requestRender();
   }
 
+  private toggleWrapAll(): void {
+    this.wrapAll = !this.wrapAll;
+    this.logScroll = 0;
+    this.tui.requestRender();
+  }
+
   handleInput(data: string): void {
     if (this.keys.matches(data, "tui.select.confirm")) return this.done(this.options[this.selected]);
     if (this.keys.matches(data, "tui.select.cancel")) return this.done(undefined);
@@ -225,6 +240,7 @@ export class TaskDetailsDialog implements Component {
     if (this.keys.matches(data, "tui.select.up")) this.selected = Math.max(0, this.selected - 1);
     else if (this.keys.matches(data, "tui.select.down")) this.selected = Math.min(this.options.length - 1, this.selected + 1);
     else if (matchesKey(data, "t")) return this.toggleThinkingOnly();
+    else if (matchesKey(data, "w")) return this.toggleWrapAll();
     else if (matchesKey(data, "pageUp")) return this.scrollLog(-5);
     else if (matchesKey(data, "pageDown")) return this.scrollLog(5);
     else if (matchesKey(data, "left")) {
@@ -238,16 +254,23 @@ export class TaskDetailsDialog implements Component {
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-    if (
-      event.type === "click" &&
-      event.button === "left" &&
-      event.y === this.filterButtonRow &&
-      this.filterButtonRange &&
-      event.x >= this.filterButtonRange[0] &&
-      event.x < this.filterButtonRange[1]
-    ) {
-      this.toggleThinkingOnly();
-      return { handled: true, render: true };
+    if (event.type === "click" && event.button === "left" && event.y === this.filterButtonRow) {
+      if (
+        this.filterButtonRange &&
+        event.x >= this.filterButtonRange[0] &&
+        event.x < this.filterButtonRange[1]
+      ) {
+        this.toggleThinkingOnly();
+        return { handled: true, render: true };
+      }
+      if (
+        this.wrapButtonRange &&
+        event.x >= this.wrapButtonRange[0] &&
+        event.x < this.wrapButtonRange[1]
+      ) {
+        this.toggleWrapAll();
+        return { handled: true, render: true };
+      }
     }
     if (event.type === "wheel" && event.wheelDelta !== undefined && event.wheelDelta !== 0) {
       this.scrollLog(event.wheelDelta);

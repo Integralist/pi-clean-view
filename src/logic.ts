@@ -402,9 +402,9 @@ export function label(one: CleanViewTask, isFirstUpcoming: boolean, isPaused = f
   return isFirstUpcoming ? "Next" : "Up next";
 }
 
-// The newest entries a step's raw log keeps, and the characters each summary line keeps.
+// The newest entries a step's raw log keeps, and the characters each entry keeps.
 export const LOG_ENTRIES = 200;
-export const LOG_ENTRY_CHARS = 160;
+export const LOG_ENTRY_CHARS = 4000;
 export const LOG_THINKING_CHARS = 4000;
 
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -440,12 +440,11 @@ export function appendLog(
   text: string,
 ): CleanViewLogEntry[] {
   const last = log.at(-1);
-  const isThinking = kind === "thinking";
-  const maxChars = isThinking ? LOG_THINKING_CHARS : LOG_ENTRY_CHARS;
+  const maxChars = kind === "thinking" ? LOG_THINKING_CHARS : LOG_ENTRY_CHARS;
   if (last?.key === key) {
-    return [...log.slice(0, -1), { ...last, text: clip(last.text + text, maxChars, isThinking) }];
+    return [...log.slice(0, -1), { ...last, text: clip(last.text + text, maxChars, true) }];
   }
-  return [...log, { kind, key, text: clip(text, maxChars, isThinking) }].slice(-LOG_ENTRIES);
+  return [...log, { kind, key, text: clip(text, maxChars, true) }].slice(-LOG_ENTRIES);
 }
 
 /** A name sized to the column: cut with "…" when it would wrap, padded otherwise. */
