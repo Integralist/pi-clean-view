@@ -219,4 +219,70 @@ describe("TaskDetailsDialog", () => {
     expect(unwrapped).toContain("[○ Wrap (w)]");
     expect(unwrapped).not.toContain("end-of-cmd");
   });
+
+  test("toggles inputs filter in step log via 'i' key and header button click, keeping thinking and calls while hiding output and errors", () => {
+    const logs = [
+      { kind: "thinking" as const, key: "th1", text: "💭 **Planning the approach**" },
+      { kind: "call" as const, key: "c1", text: "→ read {\"path\":\"src/inspector.ts\"}" },
+      { kind: "result" as const, key: "r1", text: "← file contents" },
+      { kind: "error" as const, key: "e1", text: "← error: failed to run" },
+    ];
+    const { dialog } = open(details({ logs }));
+
+    const initialLines = dialog.render(120);
+    const initial = initialLines.join("\n");
+    expect(initial).toContain("Planning the approach");
+    expect(initial).toContain("src/inspector.ts");
+    expect(initial).toContain("file contents");
+    expect(initial).toContain("error: failed to run");
+    expect(initial).toContain("[○ Inputs (i)]");
+
+    dialog.handleInput("i");
+    const filtered = dialog.render(120).join("\n");
+    expect(filtered).toContain("Planning the approach");
+    expect(filtered).toContain("src/inspector.ts");
+    expect(filtered).not.toContain("file contents");
+    expect(filtered).not.toContain("error: failed to run");
+    expect(filtered).toContain("[● Inputs (i)]");
+
+    const headerRow = initialLines.findIndex((line) => line.includes("[○ Inputs (i)]"));
+    const buttonX = initialLines[headerRow]!.indexOf("[○ Inputs (i)]") + 2;
+    dialog.handleMouse?.({
+      type: "click",
+      button: "left",
+      x: buttonX,
+      y: headerRow,
+      screenX: buttonX,
+      screenY: headerRow,
+      width: 120,
+      height: 15,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    });
+    const unfiltered = dialog.render(120).join("\n");
+    expect(unfiltered).toContain("file contents");
+    expect(unfiltered).toContain("error: failed to run");
+    expect(unfiltered).toContain("[○ Inputs (i)]");
+  });
+
+  test("wraps command input lines when 'w' and 'i' are combined, hiding lengthy command output", () => {
+    const logs = [
+      { kind: "call" as const, key: "c1", text: `→ bash {"command":"${"echo hello ".repeat(10)}end-of-cmd"}` },
+      { kind: "result" as const, key: "r1", text: "← line one\nline two with lengthy full output" },
+    ];
+    const { dialog } = open(details({ logs }));
+
+    dialog.handleInput("i");
+    const filtered = dialog.render(100).join("\n");
+    expect(filtered).not.toContain("end-of-cmd");
+    expect(filtered).not.toContain("line two with lengthy full output");
+
+    dialog.handleInput("w");
+    const wrapped = dialog.render(100).join("\n");
+    expect(wrapped).toContain("[● Inputs (i)]");
+    expect(wrapped).toContain("[● Wrap (w)]");
+    expect(wrapped).toContain("end-of-cmd");
+    expect(wrapped).not.toContain("line two with lengthy full output");
+  });
 });
