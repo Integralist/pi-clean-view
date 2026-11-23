@@ -739,6 +739,35 @@ describe("extension integration", () => {
     expect(h.renderWidget(80).join("\n")).toContain("Needs you");
   });
 
+  test("another extension's custom overlay does not pause the plan or mark Needs you", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Run harness checks", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { steps: ["Run harness checks"] });
+    await h.emit("tool_call", { toolCallId: "bash-1", toolName: "bash", input: { command: "bin/test.sh" } });
+
+    await h.emit("ui_prompt_start", { reason: "ui_prompt", kind: "custom" });
+    const band = h.renderWidget(80).join("\n");
+    expect(band).not.toContain("Needs you");
+    expect(band).not.toContain("Paused");
+    expect(band).not.toContain("Waiting for your answer");
+
+    await h.emit("ui_prompt_end", { reason: "ui_prompt", kind: "custom" });
+    expect(h.renderWidget(80).join("\n")).not.toContain("Needs you");
+
+    // Dedicated prompts still show Needs you and are not cleared by a custom overlay ending.
+    await h.emit("ui_prompt_start", { reason: "ui_prompt", kind: "select", title: "Pick an option" });
+    expect(h.renderWidget(80).join("\n")).toContain("Needs you");
+    await h.emit("ui_prompt_end", { reason: "ui_prompt", kind: "custom" });
+    expect(h.renderWidget(80).join("\n")).toContain("Needs you");
+    await h.emit("ui_prompt_end", { reason: "ui_prompt", kind: "select" });
+    expect(h.renderWidget(80).join("\n")).not.toContain("Needs you");
+  });
+
   test("pressing ctrl+space while task details is open toggles it closed", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);

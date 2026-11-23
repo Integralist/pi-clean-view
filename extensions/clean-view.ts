@@ -379,9 +379,6 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
   }
 
-  // Pi announces every dialog as a prompt; Clean View's own task details must not read as a question.
-  let isOwnDialogPending = false;
-  let isOwnDialogOpen = false;
   let activeDetailsClose: ((choice: string | undefined) => void) | undefined;
 
   async function inspectTask(taskId: string, ctx: ExtensionContext | undefined = activeCtx): Promise<void> {
@@ -409,7 +406,6 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         logs: taskLogs.get(task.id) ?? [],
       }));
     };
-    isOwnDialogPending = true;
     const choice = await ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
       activeDetailsClose = done;
       return new TaskDetailsDialog(tui, theme, keybindings, pages, start, (choice) => {
@@ -417,7 +413,6 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
         done(choice);
       }, INSPECT_SHORTCUT);
     });
-    isOwnDialogPending = false;
     activeDetailsClose = undefined;
     if (choice === STOP) ctx.abort();
   }
@@ -764,22 +759,18 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     return undefined;
   });
 
+  // Pi fires ui_prompt_start for every ctx.ui.custom() call, including non-blocking overlays
+  // like side chats, viewers, and Clean View's own task details. Only treat dedicated prompt
+  // kinds (confirm, select, input, editor) as Pi waiting for an answer.
   pi.on("ui_prompt_start", (event) => {
-    if (isOwnDialogPending && event.kind === "custom") {
-      isOwnDialogPending = false;
-      isOwnDialogOpen = true;
-      return;
-    }
+    if (event.kind === "custom") return;
     setInputThinking(false);
     edit((list) => isRunning(list) ? { ...list, activity: activity("Waiting for your answer", false) } : list);
     needsYou(event.kind === "confirm" ? NEEDS_OK : HAS_QUESTION);
   });
 
   pi.on("ui_prompt_end", (event) => {
-    if (isOwnDialogOpen && event.kind === "custom") {
-      isOwnDialogOpen = false;
-      return;
-    }
+    if (event.kind === "custom") return;
     backToWork();
   });
 
