@@ -565,6 +565,37 @@ describe("extension integration", () => {
     expect(rendered).not.toContain("Thinking...");
   });
 
+  test("shows Thinking immediately on idle submit after an abort and reports compaction mid-run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
+    tempDirs.push(dir);
+    const h = createHarness({ directory: dir, now: () => 1000 });
+    await h.emit("session_start");
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "what if we...", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.emit("agent_settled", { aborted: true });
+
+    let rendered = h.renderWidget(100).join("\n");
+    expect(rendered).toContain("Stopped");
+    expect(rendered).toContain("Paused");
+
+    // Idle submit has streamingBehavior === undefined and may pause in pre-run compaction before before_agent_start.
+    await h.emit("input", { text: "Full prompt after abort", source: "interactive" });
+    rendered = h.renderWidget(100).join("\n");
+    expect(rendered).toContain("Thinking...");
+    expect(rendered).not.toContain("Stopped");
+    expect(rendered).not.toContain("Paused");
+
+    // Once compaction finishes and before_agent_start runs, mid-run compaction surfaces in activity.
+    await h.emit("before_agent_start", {
+      messageType: "user", prompt: "Full prompt after abort", systemPrompt: "", systemPromptOptions: { sections: {} },
+    });
+    await h.callTool("plan_steps", { title: "Handle full prompt", steps: ["Inspect files"] });
+    await h.emit("session_before_compact", { reason: "threshold" });
+    rendered = h.renderWidget(120).join("\n");
+    expect(rendered).toContain("Compacting context");
+  });
+
   test("task clicks show details and can stop the whole run", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-clean-view-"));
     tempDirs.push(dir);

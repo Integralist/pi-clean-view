@@ -689,7 +689,6 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
       !ctx.hasUI ||
       ctx.mode !== "tui" ||
       event.source === "extension" ||
-      event.streamingBehavior === undefined ||
       (text === "" && (event.images?.length ?? 0) === 0) ||
       text.startsWith("/")
     ) {
@@ -697,6 +696,13 @@ export default function cleanView(pi: ExtensionAPI, options: CleanViewOptions = 
     }
     setInputThinking(true);
     return { action: "continue" };
+  });
+
+  pi.on("session_before_compact", () => {
+    if (isRunning(checklist)) {
+      edit((list) => ({ ...list, activity: activity("Compacting context", true) }));
+    }
+    return undefined;
   });
 
   pi.on("before_agent_start", (event, ctx) => {
